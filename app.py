@@ -42,6 +42,13 @@ for col in num_cols:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
+# add yahoo chart link
+def to_yf_chart(t: str) -> str:
+    t = str(t).strip().upper()
+    return f"https://finance.yahoo.com/quote/{t}/chart"
+
+df["yahoo_chart"] = df["ticker"].map(to_yf_chart)
+
 secs = file_updated_ago_seconds(CSV_PATH)
 if secs is not None:
     st.caption(f"Data file updated ~{secs}s ago.")
@@ -54,16 +61,14 @@ ticker_search = st.sidebar.text_input("Ticker search", "").strip().upper()
 tfs = sorted([x for x in df["tf"].dropna().unique().tolist()])
 selected_tfs = st.sidebar.multiselect("Timeframes", tfs, default=tfs)
 
-# keep filtering on setup (plan name)
 setups = sorted([x for x in df["setup"].dropna().unique().tolist()]) if "setup" in df.columns else []
 selected_setups = st.sidebar.multiselect("Setup (plan)", setups, default=setups) if setups else []
 
-# optional filter on pattern
 patterns = sorted([x for x in df["pattern"].dropna().unique().tolist()]) if "pattern" in df.columns else []
-selected_patterns = st.sidebar.multiselect("Pattern (last 2 candles)", patterns, default=patterns) if patterns else []
+selected_patterns = st.sidebar.multiselect("Pattern (last 2)", patterns, default=patterns) if patterns else []
 
-dirs = sorted([x for x in df["dir"].dropna().unique().tolist()])
-selected_dirs = st.sidebar.multiselect("Direction", dirs, default=dirs)
+dirs = sorted([x for x in df["dir"].dropna().unique().tolist()]) if "dir" in df.columns else []
+selected_dirs = st.sidebar.multiselect("Direction", dirs, default=dirs) if dirs else []
 
 min_score = None
 max_score = None
@@ -95,7 +100,7 @@ if "scan_time" in df.columns and df["scan_time"].notna().any():
     c2.metric("Last scan_time", str(df["scan_time"].dropna().iloc[-1]))
 c3.metric("Tickers in file", df["ticker"].nunique())
 
-# Optional ticker focus
+# Optional focus ticker
 tickers = sorted(filtered["ticker"].dropna().unique().tolist())
 selected_ticker = st.selectbox("Focus ticker (optional)", ["(All)"] + tickers)
 
@@ -114,22 +119,60 @@ for col in ["current_price", "entry", "stop", "prev_high", "prev_low", "last_hig
 
 preferred_cols = [
     "ticker", "current_price",
-    "tf",
-    "pattern",   # NEW: last 2 candles
-    "setup",     # NEW: plan name (what we trade next)
+    "tf", "pattern", "setup",
     "dir", "score",
     "actionable",
     "entry", "stop",
+    "yahoo_chart",
     "prev_ts", "prev_strat", "prev_high", "prev_low",
     "last_ts", "last_strat", "last_high", "last_low",
 ]
 cols = [c for c in preferred_cols if c in display.columns]
 
+# Split into bull/bear tables for strong visual clarity
+bull_df = display[display["dir"] == "bull"][cols] if "dir" in display.columns else display.iloc[0:0][cols]
+bear_df = display[display["dir"] == "bear"][cols] if "dir" in display.columns else display.iloc[0:0][cols]
+other_df = display[~display["dir"].isin(["bull", "bear"])][cols] if "dir" in display.columns else display.iloc[0:0][cols]
+
+st.success("Bull setups (green)")
 st.dataframe(
-    display[cols].sort_values(["ticker", "tf", "setup", "dir"], ascending=True),
+    bull_df.sort_values(["ticker", "tf", "setup"], ascending=True),
     width="stretch",
-    height=650,
+    height=350,
+    column_config={
+        "yahoo_chart": st.column_config.LinkColumn(
+            "Yahoo Chart",
+            display_text="Open chart",
+        )
+    },
 )
+
+st.error("Bear setups (red)")
+st.dataframe(
+    bear_df.sort_values(["ticker", "tf", "setup"], ascending=True),
+    width="stretch",
+    height=350,
+    column_config={
+        "yahoo_chart": st.column_config.LinkColumn(
+            "Yahoo Chart",
+            display_text="Open chart",
+        )
+    },
+)
+
+if len(other_df) > 0:
+    st.info("Other / Neutral (rare)")
+    st.dataframe(
+        other_df.sort_values(["ticker", "tf", "setup"], ascending=True),
+        width="stretch",
+        height=250,
+        column_config={
+            "yahoo_chart": st.column_config.LinkColumn(
+                "Yahoo Chart",
+                display_text="Open chart",
+            )
+        },
+    )
 
 st.download_button(
     "Download filtered CSV",
