@@ -2,267 +2,226 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
-import csv
-import re
-from typing import List, Dict, Optional
+from dataclasses import dataclass
+from typing import List, Tuple
 
 import pandas as pd
-import requests
-import yfinance as yf
 
 from config import (
     DEV_MODE,
     DEV_TICKERS_LIMIT,
     MIN_MARKET_CAP,
-    UNIVERSE_MODE,
-    UNIVERSE_CACHE_DIR,
-    UNIVERSE_SYMBOLS_PATH,
-    UNIVERSE_MARKETCAP_PATH,
+    PRIORITY_TOP_STOCKS,
+    MAX_TICKERS_PER_RUN,
+    PRIORITY_PER_RUN,
+    ROTATION_PER_RUN,
+    UNIVERSE_CACHE_TTL_SEC,
 )
 
-# -------------------------
-# DEV TICKERS (fast)
-# -------------------------
-DEV_TICKERS = [
-    "SPY", "QQQ", "IWM",
-    "AAPL", "MSFT", "NVDA",
-    "TSLA", "AMZN", "META",
-    "ARKK"
-]
+STOCKS_URL = "https://stockanalysis.com/list/biggest-companies/"
+ETFS_URL = "https://stockanalysis.com/etf/"
 
-# -------------------------
-# Full universe sources
-# -------------------------
-# Free symbol lists:
-# - NASDAQ listed
-# - NYSE listed
-# - AMEX listed
-# These are widely mirrored on the web. We cache locally and only refresh periodically.
-SYMBOL_SOURCES = [
-    # These endpoints are commonly used for listing files. If one fails, the others may still work.
-    "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
-    "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
-]
-
-# Refresh symbol list every 7 days (in seconds)
-SYMBOLS_TTL = 7 * 24 * 3600
-
-# Refresh marketcap cache every 7 days (in seconds)
-MARKETCAP_TTL = 7 * 24 * 3600
-
-# Yahoo rate safety (seconds between marketcap calls)
-MCAP_SLEEP = 0.12  # keep it gentle to avoid bans
+CACHE_DIR = "cache/universe"
+CACHE_STOCKS = os.path.join(CACHE_DIR, "stocks_biggest.csv")
+CACHE_ETFS = os.path.join(CACHE_DIR, "etfs_all.csv")
+CACHE_STATE = os.path.join(CACHE_DIR, "state.json")
 
 
-# -------------------------
-# Public API
-# -------------------------
-def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
-    if UNIVERSE_MODE.upper() == "DEV":
-        print("[Universe] DEV mode active")
-        return DEV_TICKERS
-
-    if UNIVERSE_MODE.upper() != "FULL":
-        raise ValueError(f"Unknown UNIVERSE_MODE: {UNIVERSE_MODE}")
-
-    print("[Universe] FULL mode active (cached)")
-    symbols = load_or_refresh_symbols()
-    tickers = filter_by_market_cap(symbols, min_market_cap=min_market_cap)
-
-    if DEV_MODE:
-        print("[Universe] DEV_MODE=True, limiting tickers for speed")
-        return tickers[:DEV_TICKERS_LIMIT]
-
-    return tickers
+def _ensure_dirs() -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-# -------------------------
-# Helpers
-# -------------------------
-def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
-
-
-def _is_fresh(path: str, ttl: int) -> bool:
+def _is_fresh(path: str, ttl_sec: int) -> bool:
     if not os.path.exists(path):
         return False
     age = time.time() - os.path.getmtime(path)
-    return age < ttl
+    return age <= ttl_sec
 
 
-def _clean_symbol(sym: str) -> Optional[str]:
-    if sym is None:
-        return None
-    s = sym.strip().upper()
-
-    # Remove weird symbols / test issues
-    # Keep ETF tickers too (SPY, QQQ, etc.)
-    if not s:
-        return None
-
-    # NasdaqTrader lists can contain symbols like "BRK.A" (dot), or "BF.B"
-    # yfinance typically supports "BRK-B" not "BRK.B"
-    # We’ll map dots to hyphens for Yahoo compatibility.
-    s = s.replace(".", "-")
-
-    # Filter out symbols with spaces or non-ticker junk
-    if re.search(r"\s", s):
-        return None
-
-    # Exclude obvious non-equity test symbols
-    if s in ("SYMBOL", "FILE", "TEST"):
-        return None
-
-    return s
-
-
-# -------------------------
-# Symbol list (cached)
-# -------------------------
-def load_or_refresh_symbols() -> List[str]:
-    _ensure_dir(UNIVERSE_CACHE_DIR)
-
-    if _is_fresh(UNIVERSE_SYMBOLS_PATH, SYMBOLS_TTL):
-        return _read_symbols_csv(UNIVERSE_SYMBOLS_PATH)
-
-    symbols: List[str] = []
-
-    # Download and parse nasdaqlisted + otherlisted
-    for url in SYMBOL_SOURCES:
-        try:
-            txt = requests.get(url, timeout=20).text
-            symbols.extend(_parse_nasdaqtrader_listing(txt))
-        except Exception as e:
-            print(f"[Universe] Warning: failed to load {url}: {e}")
-
-    symbols = sorted(set([s for s in (_clean_symbol(x) for x in symbols) if s]))
-
-    # Write cache
-    with open(UNIVERSE_SYMBOLS_PATH, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["symbol"])
-        for s in symbols:
-            w.writerow([s])
-
-    print(f"[Universe] Cached {len(symbols)} symbols -> {UNIVERSE_SYMBOLS_PATH}")
-    return symbols
-
-
-def _parse_nasdaqtrader_listing(text: str) -> List[str]:
+def _parse_market_cap_to_int(value) -> int | None:
     """
-    nasdaqlisted.txt format:
-      Symbol|Security Name|Market Category|...|Test Issue|...|Financial Status|...
-      File Creation Time: ...
-    otherlisted.txt format:
-      ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|...
-      File Creation Time: ...
-    We'll parse the first column for symbols and ignore metadata lines.
+    StockAnalysis market cap strings typically look like:
+      '4.55T', '911.31B', '245.78M', '-' etc
+    Return integer dollars.
     """
-    out: List[str] = []
-    lines = text.splitlines()
-    for line in lines:
-        if not line or line.startswith("File Creation Time:"):
-            continue
-        if "|" not in line:
-            continue
-        parts = line.split("|")
-        sym = parts[0].strip()
-        if sym and sym.upper() not in ("SYMBOL", "ACT SYMBOL"):
-            out.append(sym)
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s == "-" or s.lower() == "nan":
+        return None
+
+    mult = 1
+    if s.endswith("T"):
+        mult = 1_000_000_000_000
+        s = s[:-1]
+    elif s.endswith("B"):
+        mult = 1_000_000_000
+        s = s[:-1]
+    elif s.endswith("M"):
+        mult = 1_000_000
+        s = s[:-1]
+    elif s.endswith("K"):
+        mult = 1_000
+        s = s[:-1]
+
+    try:
+        return int(float(s.replace(",", "")) * mult)
+    except Exception:
+        return None
+
+
+def _fetch_table(url: str) -> pd.DataFrame:
+    """
+    Uses pandas.read_html to parse the first main table.
+    """
+    tables = pd.read_html(url)
+    if not tables:
+        return pd.DataFrame()
+    # Usually the first big table is index 0
+    return tables[0].copy()
+
+
+def _load_stocks_biggest(force_refresh: bool = False) -> pd.DataFrame:
+    _ensure_dirs()
+
+    if not force_refresh and _is_fresh(CACHE_STOCKS, UNIVERSE_CACHE_TTL_SEC):
+        return pd.read_csv(CACHE_STOCKS)
+
+    df = _fetch_table(STOCKS_URL)
+    if df.empty:
+        raise RuntimeError("Could not load stocks table from StockAnalysis.")
+
+    # Expected columns: ["No.", "Symbol", "Company Name", "Market Cap", ...]
+    # Normalize column names
+    df.columns = [str(c).strip() for c in df.columns]
+
+    if "Symbol" not in df.columns or "Market Cap" not in df.columns:
+        raise RuntimeError(f"Unexpected columns in stocks table: {list(df.columns)}")
+
+    df["market_cap_int"] = df["Market Cap"].apply(_parse_market_cap_to_int)
+    df = df.dropna(subset=["Symbol", "market_cap_int"]).copy()
+    df["Symbol"] = df["Symbol"].astype(str).str.strip()
+
+    # Save cache
+    df.to_csv(CACHE_STOCKS, index=False)
+    return df
+
+
+def _load_etfs_all(force_refresh: bool = False) -> pd.DataFrame:
+    _ensure_dirs()
+
+    if not force_refresh and _is_fresh(CACHE_ETFS, UNIVERSE_CACHE_TTL_SEC):
+        return pd.read_csv(CACHE_ETFS)
+
+    df = _fetch_table(ETFS_URL)
+    if df.empty:
+        raise RuntimeError("Could not load ETFs table from StockAnalysis.")
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    if "Symbol" not in df.columns:
+        raise RuntimeError(f"Unexpected columns in ETFs table: {list(df.columns)}")
+
+    df["Symbol"] = df["Symbol"].astype(str).str.strip()
+    df = df.dropna(subset=["Symbol"]).copy()
+
+    df.to_csv(CACHE_ETFS, index=False)
+    return df
+
+
+def _read_state() -> dict:
+    _ensure_dirs()
+    if not os.path.exists(CACHE_STATE):
+        return {"offset": 0}
+    try:
+        with open(CACHE_STATE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"offset": 0}
+
+
+def _write_state(state: dict) -> None:
+    _ensure_dirs()
+    with open(CACHE_STATE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in items:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
     return out
 
 
-def _read_symbols_csv(path: str) -> List[str]:
-    df = pd.read_csv(path)
-    if "symbol" not in df.columns:
-        return []
-    return [str(x).strip().upper() for x in df["symbol"].dropna().tolist()]
+def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
+    """
+    Universe logic (AUTO):
+      - Top 1000 US stocks by market cap (priority bucket)
+      - + all ETFs
+      - Filter stocks by min_market_cap (>= $1B)
+      - Per-run batching to keep runtime reasonable:
+          * Take PRIORITY_PER_RUN from Top 1000
+          * Then rotate through the remaining eligible pool with a persistent offset
 
+    This prevents the "only A/B tickers" issue because we are NOT using alphabet slicing.
+    We are using a ranked list + rotation state.
+    """
 
-# -------------------------
-# Market cap filter (cached)
-# -------------------------
-def filter_by_market_cap(symbols: List[str], min_market_cap: int) -> List[str]:
-    _ensure_dir(UNIVERSE_CACHE_DIR)
+    # Load datasets
+    stocks_df = _load_stocks_biggest()
+    etfs_df = _load_etfs_all()
 
-    # Load existing marketcap cache if fresh-ish
-    cache: Dict[str, float] = {}
-    if os.path.exists(UNIVERSE_MARKETCAP_PATH):
-        cache = _read_marketcap_cache(UNIVERSE_MARKETCAP_PATH)
+    # Filter stocks by market cap
+    stocks_df = stocks_df[stocks_df["market_cap_int"] >= int(min_market_cap)].copy()
 
-    # If cache is old, we still use it but we’ll refresh missing entries as needed.
-    cache_age_ok = _is_fresh(UNIVERSE_MARKETCAP_PATH, MARKETCAP_TTL)
+    # Priority bucket = top N (still filtered by cap)
+    priority = stocks_df["Symbol"].head(PRIORITY_TOP_STOCKS).tolist()
 
-    # Determine which symbols need marketcap lookup
-    need_lookup = [s for s in symbols if s not in cache]
-    if not cache_age_ok:
-        # Optional: if cache is stale, we can refresh a slice each run instead of all at once
-        # to avoid timeouts. We'll still prioritize missing entries first.
-        pass
+    # Expansion pool = rest of eligible stocks + all ETFs
+    remaining_stocks = stocks_df["Symbol"].iloc[PRIORITY_TOP_STOCKS:].tolist()
+    all_etfs = etfs_df["Symbol"].tolist()
 
-    # Look up market caps for missing symbols (throttled)
-    looked_up = 0
-    for sym in need_lookup:
-        mc = _fetch_market_cap(sym)
-        if mc is not None:
-            cache[sym] = mc
+    expansion_pool = _dedupe_keep_order(remaining_stocks + all_etfs)
+
+    # Batched selection
+    # - Always include some priority each run
+    take_priority = min(PRIORITY_PER_RUN, len(priority))
+    priority_batch = priority[:take_priority]
+
+    # Rotate expansion pool
+    state = _read_state()
+    offset = int(state.get("offset", 0)) if expansion_pool else 0
+
+    take_rotation = min(ROTATION_PER_RUN, len(expansion_pool))
+    if take_rotation > 0:
+        start = offset % len(expansion_pool)
+        end = start + take_rotation
+        if end <= len(expansion_pool):
+            rotation_batch = expansion_pool[start:end]
         else:
-            cache[sym] = -1  # mark as unknown/unavailable
-        looked_up += 1
-        time.sleep(MCAP_SLEEP)
+            rotation_batch = expansion_pool[start:] + expansion_pool[: end - len(expansion_pool)]
+        offset = (start + take_rotation) % len(expansion_pool)
+    else:
+        rotation_batch = []
 
-        # Safety guard: don't look up infinite symbols in one GitHub run.
-        # You can raise this later once stable.
-        if looked_up >= 1200 and not DEV_MODE:
-            print("[Universe] Hit lookup guard (1200). Using cached market caps for the rest this run.")
-            break
+    state["offset"] = offset
+    _write_state(state)
 
-    _write_marketcap_cache(UNIVERSE_MARKETCAP_PATH, cache)
+    universe = _dedupe_keep_order(priority_batch + rotation_batch)
 
-    # Filter final list
-    tickers = [s for s in symbols if cache.get(s, -1) >= min_market_cap]
+    # DEV mode hard limit (so local testing is fast)
+    if DEV_MODE:
+        universe = universe[:DEV_TICKERS_LIMIT]
 
-    print(f"[Universe] Universe after market cap filter >= {min_market_cap:,}: {len(tickers)} tickers")
-    return tickers
+    # Final per-run safety cap
+    universe = universe[:MAX_TICKERS_PER_RUN]
 
-
-def _fetch_market_cap(symbol: str) -> Optional[float]:
-    try:
-        t = yf.Ticker(symbol)
-        info = getattr(t, "fast_info", None)
-        if info and isinstance(info, dict):
-            mc = info.get("market_cap")
-            if mc is not None:
-                return float(mc)
-
-        # fallback to .info (slower)
-        inf = t.info
-        mc2 = inf.get("marketCap")
-        if mc2 is not None:
-            return float(mc2)
-
-        return None
-    except Exception:
-        return None
-
-
-def _read_marketcap_cache(path: str) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    try:
-        df = pd.read_csv(path)
-        if "symbol" not in df.columns or "market_cap" not in df.columns:
-            return out
-        for _, r in df.iterrows():
-            out[str(r["symbol"]).strip().upper()] = float(r["market_cap"])
-    except Exception:
-        return out
-    return out
-
-
-def _write_marketcap_cache(path: str, cache: Dict[str, float]) -> None:
-    df = pd.DataFrame(
-        [{"symbol": k, "market_cap": v} for k, v in cache.items()]
-    ).sort_values("symbol")
-    df.to_csv(path, index=False)
+    print(f"[Universe] Loaded: priority={len(priority_batch)}, rotation={len(rotation_batch)}, total={len(universe)}")
+    print(f"[Universe] Stock cap filter: >= ${int(min_market_cap):,}")
+    return universe
