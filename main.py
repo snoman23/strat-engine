@@ -23,21 +23,20 @@ from strat_signals import analyze_last_closed_setups, last_closed_index
 
 ET = ZoneInfo("America/New_York")
 
-# Scan all timeframes you want supported on the website
-TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H", "30M", "15M", "10M", "5M"]
+# ------------------------------------------------------------
+# Timeframes: keep 30M+ only (because scheduler runs every 10m)
+# ------------------------------------------------------------
+TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H", "30M"]
 
-# Pull directly from Yahoo for what it already provides (1d, 60m, 5m)
+# Pull directly from Yahoo for what it already provides
 DIRECT = {
     "D": ("1d", None),
     "1H": ("60m", None),
-    "5M": ("5m", None),
+    "30M": ("30m", None),
 }
 
 # Derive (resample) everything else from the closest base feed
 DERIVED = {
-    "10M": ("5m", "10M"),
-    "15M": ("5m", "15M"),
-    "30M": ("5m", "30M"),
     "2H": ("60m", "2H"),
     "3H": ("60m", "3H"),
     "4H": ("60m", "4H"),
@@ -52,9 +51,10 @@ def build_timeframe_frames(ticker: str):
     """
     Loads base Yahoo feeds from YF_BASE_FEEDS, then builds all requested timeframes
     using DIRECT pulls + DERIVED resamples.
+
     Returns:
       frames: dict[str, DataFrame] (per timeframe like "4H", "D", "M")
-      feeds: dict[str, DataFrame]  (raw yahoo feeds like "1d", "60m", "5m")
+      feeds: dict[str, DataFrame]  (raw yahoo feeds like "1d", "60m", "30m")
     """
     feeds = {}
 
@@ -85,11 +85,11 @@ def build_timeframe_frames(ticker: str):
 def get_current_price(feeds: dict) -> float | None:
     """
     Best-effort current price:
-    - prefer 5m last close
+    - prefer 30m last close
     - fallback to 60m last close
     - fallback to daily last close
     """
-    for k in ("5m", "60m", "1d"):
+    for k in ("30m", "60m", "1d"):
         df = feeds.get(k)
         if df is not None and not df.empty and "close" in df.columns:
             try:
