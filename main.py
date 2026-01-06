@@ -189,17 +189,14 @@ def scan_ticker(ticker: str, scan_time: str):
 
 
 def main():
-    scan_time = (
-    pd.Timestamp.now(tz=ZoneInfo("America/New_York"))
-    .strftime("%Y-%m-%d %H:%M:%S %Z")
-)
-
+    scan_time = pd.Timestamp.now(tz=ZoneInfo("America/New_York")).strftime(
+        "%Y-%m-%d %H:%M:%S %Z"
+    )
 
     tickers = load_universe(min_market_cap=MIN_MARKET_CAP)
 
     if DEV_MODE:
         tickers = tickers[:DEV_TICKERS_LIMIT]
-        print("\n[Universe] DEV mode active\n")
 
     print(f"Scan time: {scan_time}")
     print(f"Scanning {len(tickers)} tickers...\n")
@@ -229,7 +226,6 @@ def main():
 
     write_snapshot(all_rows)
     print(f"\nSnapshot written: {len(all_rows)} rows\n")
-
 
 if __name__ == "__main__":
     main()
