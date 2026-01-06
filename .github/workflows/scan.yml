@@ -2,9 +2,10 @@ name: Run STRAT Scanner
 
 on:
   schedule:
-    # Mon–Fri at ~4:30pm ET (21:30 UTC)
-    - cron: "30 21 * * 1-5"
+    # Mon–Fri every 10 minutes (scheduler.py decides if anything actually closed)
+    - cron: "*/10 * * * 1-5"
   workflow_dispatch: {}
+
 
 jobs:
   scan:
