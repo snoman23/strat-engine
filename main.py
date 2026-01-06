@@ -17,6 +17,8 @@ from timeframes.resample import resample_timeframe
 from strat.classify import classify_strat_candles
 from scoring.continuity import continuity_score
 from strat_signals import analyze_last_closed_setups, last_closed_index
+from zoneinfo import ZoneInfo
+
 
 TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
 
@@ -186,7 +188,11 @@ def scan_ticker(ticker: str, scan_time: str):
 
 
 def main():
-    scan_time = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    scan_time = (
+    pd.Timestamp.now(tz=ZoneInfo("America/New_York"))
+    .strftime("%Y-%m-%d %H:%M:%S %Z")
+)
+
 
     tickers = load_universe(min_market_cap=MIN_MARKET_CAP)
 
