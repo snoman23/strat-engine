@@ -36,16 +36,15 @@ if df.empty:
     st.warning("No scan results found yet. If you just deployed, reboot the app once from Streamlit Cloud.")
     st.stop()
 
-# Ensure numeric types
+# numeric conversion
 num_cols = ["entry", "stop", "current_price", "score", "prev_high", "prev_low", "last_high", "last_low"]
 for col in num_cols:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# Small status line (helps sanity-check data freshness)
 secs = file_updated_ago_seconds(CSV_PATH)
 if secs is not None:
-    st.caption(f"Data file updated ~{secs}s ago (cache/results/latest.csv).")
+    st.caption(f"Data file updated ~{secs}s ago.")
 
 # Sidebar filters
 st.sidebar.header("Filters")
@@ -55,8 +54,13 @@ ticker_search = st.sidebar.text_input("Ticker search", "").strip().upper()
 tfs = sorted([x for x in df["tf"].dropna().unique().tolist()])
 selected_tfs = st.sidebar.multiselect("Timeframes", tfs, default=tfs)
 
-setups = sorted([x for x in df["setup"].dropna().unique().tolist()])
-selected_setups = st.sidebar.multiselect("Setups", setups, default=setups)
+# keep filtering on setup (plan name)
+setups = sorted([x for x in df["setup"].dropna().unique().tolist()]) if "setup" in df.columns else []
+selected_setups = st.sidebar.multiselect("Setup (plan)", setups, default=setups) if setups else []
+
+# optional filter on pattern
+patterns = sorted([x for x in df["pattern"].dropna().unique().tolist()]) if "pattern" in df.columns else []
+selected_patterns = st.sidebar.multiselect("Pattern (last 2 candles)", patterns, default=patterns) if patterns else []
 
 dirs = sorted([x for x in df["dir"].dropna().unique().tolist()])
 selected_dirs = st.sidebar.multiselect("Direction", dirs, default=dirs)
@@ -73,16 +77,14 @@ filtered = df.copy()
 
 if ticker_search:
     filtered = filtered[filtered["ticker"].astype(str).str.contains(ticker_search, na=False)]
-
 if selected_tfs:
     filtered = filtered[filtered["tf"].isin(selected_tfs)]
-
 if selected_setups:
     filtered = filtered[filtered["setup"].isin(selected_setups)]
-
+if selected_patterns:
+    filtered = filtered[filtered["pattern"].isin(selected_patterns)]
 if selected_dirs:
     filtered = filtered[filtered["dir"].isin(selected_dirs)]
-
 if min_score is not None and "score" in filtered.columns:
     filtered = filtered[(filtered["score"].fillna(0) >= min_score) & (filtered["score"].fillna(0) <= max_score)]
 
@@ -93,7 +95,7 @@ if "scan_time" in df.columns and df["scan_time"].notna().any():
     c2.metric("Last scan_time", str(df["scan_time"].dropna().iloc[-1]))
 c3.metric("Tickers in file", df["ticker"].nunique())
 
-# Optional ticker dropdown (makes it easier than scanning long tables)
+# Optional ticker focus
 tickers = sorted(filtered["ticker"].dropna().unique().tolist())
 selected_ticker = st.selectbox("Focus ticker (optional)", ["(All)"] + tickers)
 
@@ -102,22 +104,20 @@ if selected_ticker != "(All)":
     px = None
     if "current_price" in filtered.columns and filtered["current_price"].dropna().any():
         px = float(filtered["current_price"].dropna().iloc[0])
+    st.subheader(f"{selected_ticker}  (Current: {px:.2f})" if px is not None else selected_ticker)
 
-    if px is not None:
-        st.subheader(f"{selected_ticker}  (Current: {px:.2f})")
-    else:
-        st.subheader(selected_ticker)
-
-# Display formatting (2 decimals on key numeric fields)
+# Display formatting: 2 decimals
 display = filtered.copy()
 for col in ["current_price", "entry", "stop", "prev_high", "prev_low", "last_high", "last_low"]:
     if col in display.columns:
         display[col] = display[col].map(lambda x: f"{x:.2f}" if pd.notna(x) else "")
 
-# Columns to show
 preferred_cols = [
     "ticker", "current_price",
-    "tf", "setup", "dir", "score",
+    "tf",
+    "pattern",   # NEW: last 2 candles
+    "setup",     # NEW: plan name (what we trade next)
+    "dir", "score",
     "actionable",
     "entry", "stop",
     "prev_ts", "prev_strat", "prev_high", "prev_low",
@@ -125,14 +125,12 @@ preferred_cols = [
 ]
 cols = [c for c in preferred_cols if c in display.columns]
 
-# Table
 st.dataframe(
     display[cols].sort_values(["ticker", "tf", "setup", "dir"], ascending=True),
     width="stretch",
     height=650,
 )
 
-# Download
 st.download_button(
     "Download filtered CSV",
     data=filtered.to_csv(index=False).encode("utf-8"),
@@ -142,7 +140,6 @@ st.download_button(
 
 st.divider()
 
-# Disclaimer
 st.markdown(
     """
 ### Disclaimer
