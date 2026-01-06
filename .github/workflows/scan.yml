@@ -2,8 +2,8 @@ name: Run STRAT Scanner
 
 on:
   schedule:
-    # Mon–Fri every 20 minutes (scheduler.py decides if anything actually closed)
-    - cron: "*/20 * * * 1-5"
+    # Mon–Fri hourly (avoids queue/cancel with ~31m runtime)
+    - cron: "0 * * * 1-5"
   workflow_dispatch: {}
 
 permissions:
@@ -51,7 +51,7 @@ jobs:
           # Universe rotation state (prevents scanning same slice forever)
           git add cache/universe/state.json || true
 
-          # Optional: cache universe source tables so runs stay fast
+          # Universe table caches (keeps runs faster)
           git add cache/universe/*.csv || true
 
           git commit -m "Update scan results" || echo "No changes to commit"
