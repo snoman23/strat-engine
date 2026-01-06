@@ -18,13 +18,11 @@ from strat.classify import classify_strat_candles
 from scoring.continuity import continuity_score
 from strat_signals import analyze_last_closed_setups, last_closed_index
 
-
-# Only show 1H (not "60")
 TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
 
 DIRECT = {
     "D": ("1d", None),
-    "1H": ("60m", None),  # data source feed
+    "1H": ("60m", None),
 }
 
 DERIVED = {
@@ -43,10 +41,7 @@ def build_timeframe_frames(ticker: str):
 
     for interval, cfg in DEV_YF_BASE_FEEDS.items():
         df = load_ohlc(ticker, interval=interval, period=cfg["period"])
-        if df is not None and not df.empty:
-            feeds[interval] = df.sort_values("timestamp").reset_index(drop=True)
-        else:
-            feeds[interval] = pd.DataFrame()
+        feeds[interval] = df.sort_values("timestamp").reset_index(drop=True) if df is not None and not df.empty else pd.DataFrame()
 
     frames = {}
 
@@ -151,9 +146,8 @@ def scan_ticker(ticker: str, scan_time: str):
                 continue
 
             score = None
-            breakdown = None
             if sig.direction in ("bull", "bear"):
-                score, breakdown = continuity_score(sig.direction, context)
+                score, _ = continuity_score(sig.direction, context)
 
             rows.append(
                 {
@@ -163,15 +157,17 @@ def scan_ticker(ticker: str, scan_time: str):
 
                     "tf": sig.tf,
                     "kind": sig.kind,
-                    "setup": sig.setup,
-                    "dir": sig.direction,
 
+                    # NEW: separate the two concepts
+                    "pattern": sig.pattern,   # what the last 2 candles were
+                    "setup": sig.setup,       # what we are planning to trade next
+
+                    "dir": sig.direction,
                     "actionable": sig.actionable,
                     "entry": sig.entry,
                     "stop": sig.stop,
                     "score": score,
 
-                    # the 2 candles used (so you can verify vs TradingView)
                     "prev_ts": str(sig.prev_closed_ts),
                     "prev_strat": sig.prev_strat,
                     "prev_high": sig.prev_high,
@@ -182,7 +178,6 @@ def scan_ticker(ticker: str, scan_time: str):
                     "last_high": sig.last_high,
                     "last_low": sig.last_low,
 
-                    "context": context,
                     "note": sig.note,
                 }
             )
@@ -211,10 +206,10 @@ def main():
 
             if rows:
                 print(f"\n====================\nTICKER: {ticker} | current_price={px}\n====================")
-
                 df_out = pd.DataFrame(rows)
+
                 cols = [
-                    "tf", "kind", "setup", "dir", "current_price", "score",
+                    "tf", "kind", "pattern", "setup", "dir", "current_price", "score",
                     "actionable", "entry", "stop",
                     "prev_ts", "prev_strat", "prev_high", "prev_low",
                     "last_ts", "last_strat", "last_high", "last_low",
