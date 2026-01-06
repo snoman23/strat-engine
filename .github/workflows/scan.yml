@@ -6,6 +6,12 @@ on:
     - cron: "*/10 * * * 1-5"
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
+concurrency:
+  group: strat-scanner
+  cancel-in-progress: true
 
 jobs:
   scan:
@@ -14,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,10 +37,22 @@ jobs:
         run: |
           python main.py
 
-      - name: Commit updated results
+      - name: Commit updated results + state
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add cache/results/latest.csv cache/results/latest.json
+
+          # Results for Streamlit
+          git add cache/results/latest.csv cache/results/latest.json || true
+
+          # Scheduler state (prevents re-running same closed candle)
+          git add cache/meta/last_run.json || true
+
+          # Universe rotation state (prevents scanning same slice forever)
+          git add cache/universe/state.json || true
+
+          # Optional: cache universe source tables so runs stay fast
+          git add cache/universe/*.csv || true
+
           git commit -m "Update scan results" || echo "No changes to commit"
           git push
