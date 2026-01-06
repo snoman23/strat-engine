@@ -5,3 +5,8 @@ cache/
 .venv/
 venv/
 .DS_Store
+# Allow scanner outputs for hosting
+!cache/
+!cache/results/
+!cache/results/latest.csv
+!cache/results/latest.json
