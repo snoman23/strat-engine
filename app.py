@@ -1,197 +1,46 @@
 # app.py
 
-import os
-import time
-import pandas as pd
 import streamlit as st
+import pandas as pd
 
-st.set_page_config(page_title="STRAT Scanner", layout="wide")
+st.set_page_config(layout="wide")
 
 st.title("STRAT Scanner")
-st.caption("Loads latest scan results from cache/results/latest.csv")
+st.caption("Educational / informational only — not financial advice.")
 
-CSV_PATH = os.path.join("cache", "results", "latest.csv")
+DATA_PATH = "cache/results/latest.csv"
 
-
-@st.cache_data(ttl=30)
-def load_data(path: str) -> pd.DataFrame:
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(path)
-    except Exception:
-        return pd.DataFrame()
-
-
-def file_updated_ago_seconds(path: str) -> int | None:
-    try:
-        return int(time.time() - os.path.getmtime(path))
-    except Exception:
-        return None
-
-
-df = load_data(CSV_PATH)
-
-if df.empty:
-    st.warning("No scan results found yet. If you just deployed, reboot the app once from Streamlit Cloud.")
+try:
+    df = pd.read_csv(DATA_PATH)
+except Exception:
+    st.warning("No scan results available yet.")
     st.stop()
 
-# numeric conversion
-num_cols = ["entry", "stop", "current_price", "score", "prev_high", "prev_low", "last_high", "last_low"]
-for col in num_cols:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+# =========================
+# FILTER TIMEFRAMES (>=1H)
+# =========================
+ALLOWED_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
+df = df[df["tf"].isin(ALLOWED_TFS)]
 
-# add yahoo chart link
-def to_yf_chart(t: str) -> str:
-    t = str(t).strip().upper()
-    return f"https://finance.yahoo.com/quote/{t}/chart"
+df["ticker"] = df["ticker"].apply(
+    lambda t: f"[{t}](https://finance.yahoo.com/quote/{t})"
+)
 
-df["yahoo_chart"] = df["ticker"].map(to_yf_chart)
+df["current_price"] = df["current_price"].round(2)
+df["entry"] = df["entry"].round(2)
+df["stop"] = df["stop"].round(2)
 
-secs = file_updated_ago_seconds(CSV_PATH)
-if secs is not None:
-    st.caption(f"Data file updated ~{secs}s ago.")
+def color_dir(val):
+    if val == "bull":
+        return "color: green; font-weight: bold"
+    if val == "bear":
+        return "color: red; font-weight: bold"
+    return ""
 
-# Sidebar filters
-st.sidebar.header("Filters")
+st.subheader("Latest Scan Results")
 
-ticker_search = st.sidebar.text_input("Ticker search", "").strip().upper()
-
-tfs = sorted([x for x in df["tf"].dropna().unique().tolist()])
-selected_tfs = st.sidebar.multiselect("Timeframes", tfs, default=tfs)
-
-setups = sorted([x for x in df["setup"].dropna().unique().tolist()]) if "setup" in df.columns else []
-selected_setups = st.sidebar.multiselect("Setup (plan)", setups, default=setups) if setups else []
-
-patterns = sorted([x for x in df["pattern"].dropna().unique().tolist()]) if "pattern" in df.columns else []
-selected_patterns = st.sidebar.multiselect("Pattern (last 2)", patterns, default=patterns) if patterns else []
-
-dirs = sorted([x for x in df["dir"].dropna().unique().tolist()]) if "dir" in df.columns else []
-selected_dirs = st.sidebar.multiselect("Direction", dirs, default=dirs) if dirs else []
-
-min_score = None
-max_score = None
-if "score" in df.columns and df["score"].notna().any():
-    smin = int(df["score"].min())
-    smax = int(df["score"].max())
-    min_score, max_score = st.sidebar.slider("Score range", smin, smax, (smin, smax))
-
-# Apply filters
-filtered = df.copy()
-
-if ticker_search:
-    filtered = filtered[filtered["ticker"].astype(str).str.contains(ticker_search, na=False)]
-if selected_tfs:
-    filtered = filtered[filtered["tf"].isin(selected_tfs)]
-if selected_setups:
-    filtered = filtered[filtered["setup"].isin(selected_setups)]
-if selected_patterns:
-    filtered = filtered[filtered["pattern"].isin(selected_patterns)]
-if selected_dirs:
-    filtered = filtered[filtered["dir"].isin(selected_dirs)]
-if min_score is not None and "score" in filtered.columns:
-    filtered = filtered[(filtered["score"].fillna(0) >= min_score) & (filtered["score"].fillna(0) <= max_score)]
-
-# Header metrics
-c1, c2, c3 = st.columns(3)
-c1.metric("Rows", len(filtered))
-if "scan_time" in df.columns and df["scan_time"].notna().any():
-    c2.metric("Last scan_time", str(df["scan_time"].dropna().iloc[-1]))
-c3.metric("Tickers in file", df["ticker"].nunique())
-
-# Optional focus ticker
-tickers = sorted(filtered["ticker"].dropna().unique().tolist())
-selected_ticker = st.selectbox("Focus ticker (optional)", ["(All)"] + tickers)
-
-if selected_ticker != "(All)":
-    filtered = filtered[filtered["ticker"] == selected_ticker]
-    px = None
-    if "current_price" in filtered.columns and filtered["current_price"].dropna().any():
-        px = float(filtered["current_price"].dropna().iloc[0])
-    st.subheader(f"{selected_ticker}  (Current: {px:.2f})" if px is not None else selected_ticker)
-
-# Display formatting: 2 decimals
-display = filtered.copy()
-for col in ["current_price", "entry", "stop", "prev_high", "prev_low", "last_high", "last_low"]:
-    if col in display.columns:
-        display[col] = display[col].map(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-
-preferred_cols = [
-    "ticker", "current_price",
-    "tf", "pattern", "setup",
-    "dir", "score",
-    "actionable",
-    "entry", "stop",
-    "yahoo_chart",
-    "prev_ts", "prev_strat", "prev_high", "prev_low",
-    "last_ts", "last_strat", "last_high", "last_low",
-]
-cols = [c for c in preferred_cols if c in display.columns]
-
-# Split into bull/bear tables for strong visual clarity
-bull_df = display[display["dir"] == "bull"][cols] if "dir" in display.columns else display.iloc[0:0][cols]
-bear_df = display[display["dir"] == "bear"][cols] if "dir" in display.columns else display.iloc[0:0][cols]
-other_df = display[~display["dir"].isin(["bull", "bear"])][cols] if "dir" in display.columns else display.iloc[0:0][cols]
-
-st.success("Bull setups (green)")
 st.dataframe(
-    bull_df.sort_values(["ticker", "tf", "setup"], ascending=True),
+    df.style.applymap(color_dir, subset=["dir"]),
     width="stretch",
-    height=350,
-    column_config={
-        "yahoo_chart": st.column_config.LinkColumn(
-            "Yahoo Chart",
-            display_text="Open chart",
-        )
-    },
-)
-
-st.error("Bear setups (red)")
-st.dataframe(
-    bear_df.sort_values(["ticker", "tf", "setup"], ascending=True),
-    width="stretch",
-    height=350,
-    column_config={
-        "yahoo_chart": st.column_config.LinkColumn(
-            "Yahoo Chart",
-            display_text="Open chart",
-        )
-    },
-)
-
-if len(other_df) > 0:
-    st.info("Other / Neutral (rare)")
-    st.dataframe(
-        other_df.sort_values(["ticker", "tf", "setup"], ascending=True),
-        width="stretch",
-        height=250,
-        column_config={
-            "yahoo_chart": st.column_config.LinkColumn(
-                "Yahoo Chart",
-                display_text="Open chart",
-            )
-        },
-    )
-
-st.download_button(
-    "Download filtered CSV",
-    data=filtered.to_csv(index=False).encode("utf-8"),
-    file_name="strat_scanner_filtered.csv",
-    mime="text/csv",
-)
-
-st.divider()
-
-st.markdown(
-    """
-### Disclaimer
-This scanner is provided **for informational and educational purposes only** and does not constitute
-financial, investment, trading, tax, or legal advice. Signals, setups, and scoring are generated from
-historical market data and may be inaccurate, delayed, incomplete, or change due to data vendor behavior.
-
-You are solely responsible for your own trading decisions and risk management. Trading and investing involve
-substantial risk, and you may lose some or all of your investment. Past performance is not indicative of
-future results. Consult a qualified financial professional before making any investment decisions.
-"""
+    height=700,
 )
