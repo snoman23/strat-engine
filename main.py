@@ -8,8 +8,9 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from config import DEV_MODE, DEV_TICKERS_LIMIT, MIN_MARKET_CAP, DEV_YF_BASE_FEEDS
+from config import DEV_MODE, DEV_TICKERS_LIMIT, MIN_MARKET_CAP, YF_BASE_FEEDS
 from snapshot import write_snapshot
+from zoneinfo import ZoneInfo
 
 from universe.loader import load_universe
 from loaders.yahoo import load_ohlc
@@ -17,7 +18,7 @@ from timeframes.resample import resample_timeframe
 from strat.classify import classify_strat_candles
 from scoring.continuity import continuity_score
 from strat_signals import analyze_last_closed_setups, last_closed_index
-from zoneinfo import ZoneInfo
+
 
 
 TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
@@ -41,7 +42,7 @@ DERIVED = {
 def build_timeframe_frames(ticker: str):
     feeds = {}
 
-    for interval, cfg in DEV_YF_BASE_FEEDS.items():
+    for interval, cfg in YF_BASE_FEEDS.items():
         df = load_ohlc(ticker, interval=interval, period=cfg["period"])
         feeds[interval] = df.sort_values("timestamp").reset_index(drop=True) if df is not None and not df.empty else pd.DataFrame()
 
