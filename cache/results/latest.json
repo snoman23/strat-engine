@@ -1,8 +1,8 @@
 [
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "SPY",
-    "current_price": 689.1998901367188,
+    "current_price": 688.8699951171875,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -23,9 +23,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "SPY",
-    "current_price": 689.1998901367188,
+    "current_price": 688.8699951171875,
     "tf": "D",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -46,9 +46,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "SPY",
-    "current_price": 689.1998901367188,
+    "current_price": 688.8699951171875,
     "tf": "4H",
     "kind": "NEXT",
     "pattern": "2U-1",
@@ -69,9 +69,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "SPY",
-    "current_price": 689.1998901367188,
+    "current_price": 688.8699951171875,
     "tf": "3H",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -92,9 +92,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "SPY",
-    "current_price": 689.1998901367188,
+    "current_price": 688.8699951171875,
     "tf": "1H",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -115,9 +115,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "QQQ",
-    "current_price": 620.6900024414062,
+    "current_price": 619.9401245117188,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-1",
@@ -138,9 +138,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "QQQ",
-    "current_price": 620.6900024414062,
+    "current_price": 619.9401245117188,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-1",
@@ -161,9 +161,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "QQQ",
-    "current_price": 620.6900024414062,
+    "current_price": 619.9401245117188,
     "tf": "W",
     "kind": "NEXT",
     "pattern": "2U-2D",
@@ -184,9 +184,9 @@
     "note": "After 2U then 2D: watch next candle for bull reversal above 2D high."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "QQQ",
-    "current_price": 620.6900024414062,
+    "current_price": 619.9401245117188,
     "tf": "D",
     "kind": "NEXT",
     "pattern": "3-1",
@@ -207,9 +207,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "QQQ",
-    "current_price": 620.6900024414062,
+    "current_price": 619.9401245117188,
     "tf": "4H",
     "kind": "NEXT",
     "pattern": "2U-1",
@@ -230,9 +230,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "QQQ",
-    "current_price": 620.6900024414062,
+    "current_price": 619.9401245117188,
     "tf": "3H",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -253,9 +253,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "QQQ",
-    "current_price": 620.6900024414062,
+    "current_price": 619.9401245117188,
     "tf": "2H",
     "kind": "NEXT",
     "pattern": "2D-1",
@@ -276,9 +276,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "IWM",
-    "current_price": 252.5500030517578,
+    "current_price": 253.0500030517578,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -299,9 +299,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "AAPL",
-    "current_price": 264.40509033203125,
+    "current_price": 262.6300048828125,
     "tf": "1H",
     "kind": "NEXT",
     "pattern": "2U-2D",
@@ -322,9 +322,9 @@
     "note": "After 2U then 2D: watch next candle for bull reversal above 2D high."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "MSFT",
-    "current_price": 472.1199951171875,
+    "current_price": 471.8999938964844,
     "tf": "Q",
     "kind": "NEXT",
     "pattern": "2U-2D",
@@ -345,9 +345,9 @@
     "note": "After 2U then 2D: watch next candle for bull reversal above 2D high."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "MSFT",
-    "current_price": 472.1199951171875,
+    "current_price": 471.8999938964844,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-1",
@@ -368,9 +368,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "MSFT",
-    "current_price": 472.1199951171875,
+    "current_price": 471.8999938964844,
     "tf": "4H",
     "kind": "NEXT",
     "pattern": "3-1",
@@ -391,9 +391,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "MSFT",
-    "current_price": 472.1199951171875,
+    "current_price": 471.8999938964844,
     "tf": "3H",
     "kind": "NEXT",
     "pattern": "1-2D",
@@ -414,9 +414,9 @@
     "note": "RevStrat: after 1-2D, watch for 2U reversal."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "NVDA",
-    "current_price": 189.4499969482422,
+    "current_price": 188.22000122070312,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-1",
@@ -437,32 +437,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "NVDA",
-    "current_price": 189.4499969482422,
-    "tf": "3H",
-    "kind": "NEXT",
-    "pattern": "2D-2U",
-    "setup": "BEAR_REV_AFTER_2D-2U",
-    "dir": "bear",
-    "actionable": "ALERT if price < 188.98 (bear reversal); stop > 192.17",
-    "entry": 188.97999572753906,
-    "stop": 192.1739959716797,
-    "score": -11,
-    "prev_ts": "2026-01-05 15:30:00-05:00",
-    "prev_strat": "2D",
-    "prev_high": 188.24000549316406,
-    "prev_low": 186.14999389648438,
-    "last_ts": "2026-01-06 09:30:00-05:00",
-    "last_strat": "2U",
-    "last_high": 192.1739959716797,
-    "last_low": 188.97999572753906,
-    "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
-  },
-  {
-    "scan_time": "2026-01-06 15:54:51",
-    "ticker": "NVDA",
-    "current_price": 189.4499969482422,
+    "current_price": 188.22000122070312,
     "tf": "2H",
     "kind": "NEXT",
     "pattern": "2D-1",
@@ -483,9 +460,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "TSLA",
-    "current_price": 434.7699890136719,
+    "current_price": 433.13800048828125,
     "tf": "W",
     "kind": "NEXT",
     "pattern": "2U-2D",
@@ -506,9 +483,9 @@
     "note": "After 2U then 2D: watch next candle for bull reversal above 2D high."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "TSLA",
-    "current_price": 434.7699890136719,
+    "current_price": 433.13800048828125,
     "tf": "D",
     "kind": "NEXT",
     "pattern": "3-1",
@@ -529,9 +506,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "TSLA",
-    "current_price": 434.7699890136719,
+    "current_price": 433.13800048828125,
     "tf": "4H",
     "kind": "NEXT",
     "pattern": "2U-1",
@@ -552,9 +529,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "TSLA",
-    "current_price": 434.7699890136719,
+    "current_price": 433.13800048828125,
     "tf": "2H",
     "kind": "NEXT",
     "pattern": "1-2D",
@@ -575,9 +552,9 @@
     "note": "RevStrat: after 1-2D, watch for 2U reversal."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "AMZN",
-    "current_price": 237.97500610351562,
+    "current_price": 237.6999969482422,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2U-1",
@@ -598,9 +575,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "AMZN",
-    "current_price": 237.97500610351562,
+    "current_price": 237.6999969482422,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2U-1",
@@ -621,9 +598,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "AMZN",
-    "current_price": 237.97500610351562,
+    "current_price": 237.6999969482422,
     "tf": "D",
     "kind": "NEXT",
     "pattern": "3-1",
@@ -644,9 +621,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "META",
-    "current_price": 656.5999755859375,
+    "current_price": 655.6209716796875,
     "tf": "Q",
     "kind": "NEXT",
     "pattern": "2U-2D",
@@ -667,9 +644,9 @@
     "note": "After 2U then 2D: watch next candle for bull reversal above 2D high."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "META",
-    "current_price": 656.5999755859375,
+    "current_price": 655.6209716796875,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -690,9 +667,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "META",
-    "current_price": 656.5999755859375,
+    "current_price": 655.6209716796875,
     "tf": "W",
     "kind": "NEXT",
     "pattern": "2U-2D",
@@ -713,9 +690,9 @@
     "note": "After 2U then 2D: watch next candle for bull reversal above 2D high."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "META",
-    "current_price": 656.5999755859375,
+    "current_price": 655.6209716796875,
     "tf": "D",
     "kind": "NEXT",
     "pattern": "2D-2U",
@@ -736,9 +713,9 @@
     "note": "After 2D then 2U: watch next candle for bear reversal below 2U low."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "META",
-    "current_price": 656.5999755859375,
+    "current_price": 655.6209716796875,
     "tf": "4H",
     "kind": "NEXT",
     "pattern": "3-1",
@@ -759,9 +736,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "ARKK",
-    "current_price": 81.36000061035156,
+    "current_price": 81.56500244140625,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-1",
@@ -782,9 +759,9 @@
     "note": "Inside bar: next candle can break either direction."
   },
   {
-    "scan_time": "2026-01-06 15:54:51",
+    "scan_time": "2026-01-06 11:17:11 EST",
     "ticker": "ARKK",
-    "current_price": 81.36000061035156,
+    "current_price": 81.56500244140625,
     "tf": "M",
     "kind": "NEXT",
     "pattern": "2D-1",
