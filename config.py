@@ -1,6 +1,6 @@
 # config.py
 
-DEV_MODE = True
+DEV_MODE = false
 DEV_TICKERS_LIMIT = 10
 
 MIN_MARKET_CAP = 10_000_000
