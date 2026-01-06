@@ -1,6 +1,7 @@
 # app.py
 
 import os
+import time
 import pandas as pd
 import streamlit as st
 
@@ -22,10 +23,17 @@ def load_data(path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def file_updated_ago_seconds(path: str) -> int | None:
+    try:
+        return int(time.time() - os.path.getmtime(path))
+    except Exception:
+        return None
+
+
 df = load_data(CSV_PATH)
 
 if df.empty:
-    st.warning("No scan results found yet. Run:  python main.py  then refresh this page.")
+    st.warning("No scan results found yet. If you just deployed, reboot the app once from Streamlit Cloud.")
     st.stop()
 
 # Ensure numeric types
@@ -33,6 +41,11 @@ num_cols = ["entry", "stop", "current_price", "score", "prev_high", "prev_low", 
 for col in num_cols:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+
+# Small status line (helps sanity-check data freshness)
+secs = file_updated_ago_seconds(CSV_PATH)
+if secs is not None:
+    st.caption(f"Data file updated ~{secs}s ago (cache/results/latest.csv).")
 
 # Sidebar filters
 st.sidebar.header("Filters")
@@ -57,15 +70,20 @@ if "score" in df.columns and df["score"].notna().any():
 
 # Apply filters
 filtered = df.copy()
+
 if ticker_search:
-    filtered = filtered[filtered["ticker"].str.contains(ticker_search, na=False)]
+    filtered = filtered[filtered["ticker"].astype(str).str.contains(ticker_search, na=False)]
+
 if selected_tfs:
     filtered = filtered[filtered["tf"].isin(selected_tfs)]
+
 if selected_setups:
     filtered = filtered[filtered["setup"].isin(selected_setups)]
+
 if selected_dirs:
     filtered = filtered[filtered["dir"].isin(selected_dirs)]
-if min_score is not None:
+
+if min_score is not None and "score" in filtered.columns:
     filtered = filtered[(filtered["score"].fillna(0) >= min_score) & (filtered["score"].fillna(0) <= max_score)]
 
 # Header metrics
@@ -75,19 +93,22 @@ if "scan_time" in df.columns and df["scan_time"].notna().any():
     c2.metric("Last scan_time", str(df["scan_time"].dropna().iloc[-1]))
 c3.metric("Tickers in file", df["ticker"].nunique())
 
-# Optional: ticker dropdown for easier viewing
+# Optional ticker dropdown (makes it easier than scanning long tables)
 tickers = sorted(filtered["ticker"].dropna().unique().tolist())
-selected_ticker = st.selectbox("View a single ticker (optional)", ["(All)"] + tickers)
+selected_ticker = st.selectbox("Focus ticker (optional)", ["(All)"] + tickers)
 
 if selected_ticker != "(All)":
     filtered = filtered[filtered["ticker"] == selected_ticker]
-    px = filtered["current_price"].dropna().iloc[0] if "current_price" in filtered.columns and filtered["current_price"].dropna().any() else None
+    px = None
+    if "current_price" in filtered.columns and filtered["current_price"].dropna().any():
+        px = float(filtered["current_price"].dropna().iloc[0])
+
     if px is not None:
         st.subheader(f"{selected_ticker}  (Current: {px:.2f})")
     else:
         st.subheader(selected_ticker)
 
-# Round display to 2 decimals (without changing stored data)
+# Display formatting (2 decimals on key numeric fields)
 display = filtered.copy()
 for col in ["current_price", "entry", "stop", "prev_high", "prev_low", "last_high", "last_low"]:
     if col in display.columns:
@@ -104,12 +125,14 @@ preferred_cols = [
 ]
 cols = [c for c in preferred_cols if c in display.columns]
 
+# Table
 st.dataframe(
     display[cols].sort_values(["ticker", "tf", "setup", "dir"], ascending=True),
     width="stretch",
     height=650,
 )
 
+# Download
 st.download_button(
     "Download filtered CSV",
     data=filtered.to_csv(index=False).encode("utf-8"),
@@ -124,11 +147,11 @@ st.markdown(
     """
 ### Disclaimer
 This scanner is provided **for informational and educational purposes only** and does not constitute
-financial, investment, trading, or legal advice. Signals, setups, and scoring are generated from historical
-market data and may be inaccurate, delayed, incomplete, or change due to data vendor behavior.
+financial, investment, trading, tax, or legal advice. Signals, setups, and scoring are generated from
+historical market data and may be inaccurate, delayed, incomplete, or change due to data vendor behavior.
 
 You are solely responsible for your own trading decisions and risk management. Trading and investing involve
-substantial risk, and you may lose more than your initial investment. Past performance is not indicative of
+substantial risk, and you may lose some or all of your investment. Past performance is not indicative of
 future results. Consult a qualified financial professional before making any investment decisions.
 """
 )
