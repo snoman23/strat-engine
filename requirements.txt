@@ -22,3 +22,4 @@ tzdata==2025.3
 urllib3==2.6.2
 websockets==15.0.1
 yfinance==1.0
+lxml>=4.9.0
