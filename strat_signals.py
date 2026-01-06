@@ -7,17 +7,16 @@ from typing import Any, List, Optional
 
 import pandas as pd
 
-
-# We do NOT want TRIGGERED rows in output; only actionable NEXT plans.
-SHOW_TRIGGERED: bool = False
+# No TRIGGERED rows. Only NEXT plans.
 INCLUDE_22_CONTINUATION_PLANS: bool = False
 
 
 @dataclass(frozen=True)
 class StratSignal:
     tf: str
-    kind: str                 # only "NEXT" now
-    setup: str
+    kind: str                 # "NEXT"
+    pattern: str              # e.g. "2U-2D" (last two closed candles)
+    setup: str                # e.g. "BULL_REV_AFTER_2U-2D" (what to trade next)
     direction: Optional[str]  # "bull" | "bear" | None
 
     prev_closed_ts: Any
@@ -66,6 +65,11 @@ def _tf_to_seconds(tf: str) -> int:
 
 
 def last_closed_index(tf: str, df: Optional[pd.DataFrame] = None) -> int:
+    """
+    Closed-bar rules:
+    - Y/Q/M/W: always use -2 (current period bar is still forming)
+    - Intraday + D: if last row is still forming, use -2, else -1
+    """
     tf = tf.strip().upper()
 
     if tf in ("Y", "Q", "M", "W"):
@@ -83,6 +87,7 @@ def last_closed_index(tf: str, df: Optional[pd.DataFrame] = None) -> int:
     # If now is before bar end -> last row is in-progress
     if now < last_ts + dur:
         return -2
+
     return -1
 
 
@@ -121,10 +126,13 @@ def analyze_last_closed_setups(df: pd.DataFrame, tf: str) -> List[StratSignal]:
     prev_ts = prev["timestamp"]
     last_ts = last["timestamp"]
 
+    pattern = f"{prev_s}-{last_s}"
+
     def base_signal(**kwargs) -> dict:
         return dict(
             tf=tf_u,
             kind="NEXT",
+            pattern=pattern,
             prev_closed_ts=prev_ts,
             last_closed_ts=last_ts,
             prev_strat=prev_s,
@@ -145,12 +153,12 @@ def analyze_last_closed_setups(df: pd.DataFrame, tf: str) -> List[StratSignal]:
 
     signals: List[StratSignal] = []
 
-    # 1) X-1 inside bar => two-sided plan
+    # 1) X-1 Inside bar => two-sided plan (UP and DOWN)
     if last_s == "1":
         signals.append(
             StratSignal(
                 **base_signal(
-                    setup=f"{prev_s}-1",
+                    setup=f"INSIDE_BREAK_UP_AFTER_{pattern}",
                     direction="bull",
                     entry=last_high,
                     stop=last_low,
@@ -162,7 +170,7 @@ def analyze_last_closed_setups(df: pd.DataFrame, tf: str) -> List[StratSignal]:
         signals.append(
             StratSignal(
                 **base_signal(
-                    setup=f"{prev_s}-1",
+                    setup=f"INSIDE_BREAK_DOWN_AFTER_{pattern}",
                     direction="bear",
                     entry=last_low,
                     stop=last_high,
@@ -172,12 +180,13 @@ def analyze_last_closed_setups(df: pd.DataFrame, tf: str) -> List[StratSignal]:
             )
         )
 
-    # 2) Two-bar reversals (NEXT plan after the two-bar sequence)
+    # 2) Two-bar reversal patterns => NEXT reversal plan
+    # Pattern: 2U-2D => plan: bull reversal (next candle can become 2U via break above 2D high)
     if prev_s == "2U" and last_s == "2D":
         signals.append(
             StratSignal(
                 **base_signal(
-                    setup="2U-2D",
+                    setup="BULL_REV_AFTER_2U-2D",
                     direction="bull",
                     entry=last_high,
                     stop=last_low,
@@ -187,11 +196,12 @@ def analyze_last_closed_setups(df: pd.DataFrame, tf: str) -> List[StratSignal]:
             )
         )
 
+    # Pattern: 2D-2U => plan: bear reversal (next candle can become 2D via break below 2U low)
     if prev_s == "2D" and last_s == "2U":
         signals.append(
             StratSignal(
                 **base_signal(
-                    setup="2D-2U",
+                    setup="BEAR_REV_AFTER_2D-2U",
                     direction="bear",
                     entry=last_low,
                     stop=last_high,
@@ -201,18 +211,49 @@ def analyze_last_closed_setups(df: pd.DataFrame, tf: str) -> List[StratSignal]:
             )
         )
 
-    # 3) RevStrat after inside break (1-2 already happened; show ONLY the reversal plan)
-    if prev_s == "1" and last_s in ("2U", "2D"):
+    # 3) RevStrat AFTER inside break: show only the REV watch plan
+    # Pattern: 1-2U => watch for 2D reversal by breaking the 2U low
+    if prev_s == "1" and last_s == "2U":
+        signals.append(
+            StratSignal(
+                **base_signal(
+                    setup="REVSTRAT_BEAR_AFTER_1-2U",
+                    direction="bear",
+                    entry=last_low,
+                    stop=last_high,
+                    actionable=f"ALERT if price < {last_low:.2f} (RevStrat bear); stop > {last_high:.2f}",
+                    note="RevStrat: after 1-2U, watch for 2D reversal.",
+                )
+            )
+        )
+
+    # Pattern: 1-2D => watch for 2U reversal by breaking the 2D high
+    if prev_s == "1" and last_s == "2D":
+        signals.append(
+            StratSignal(
+                **base_signal(
+                    setup="REVSTRAT_BULL_AFTER_1-2D",
+                    direction="bull",
+                    entry=last_high,
+                    stop=last_low,
+                    actionable=f"ALERT if price > {last_high:.2f} (RevStrat bull); stop < {last_low:.2f}",
+                    note="RevStrat: after 1-2D, watch for 2U reversal.",
+                )
+            )
+        )
+
+    # Optional 2-2 continuation plans (OFF by default)
+    if INCLUDE_22_CONTINUATION_PLANS and prev_s in ("2U", "2D") and last_s == prev_s:
         if last_s == "2U":
             signals.append(
                 StratSignal(
                     **base_signal(
-                        setup="REV_AFTER_1-2U",
-                        direction="bear",
-                        entry=last_low,
-                        stop=last_high,
-                        actionable=f"ALERT if price < {last_low:.2f} (RevStrat bear); stop > {last_high:.2f}",
-                        note="RevStrat: after 1-2U, watch for 2D reversal.",
+                        setup="BULL_CONTINUATION_AFTER_2U-2U",
+                        direction="bull",
+                        entry=last_high,
+                        stop=last_low,
+                        actionable=f"ALERT if price > {last_high:.2f} (continuation bull); stop < {last_low:.2f}",
+                        note="Optional continuation plan.",
                     )
                 )
             )
@@ -220,12 +261,12 @@ def analyze_last_closed_setups(df: pd.DataFrame, tf: str) -> List[StratSignal]:
             signals.append(
                 StratSignal(
                     **base_signal(
-                        setup="REV_AFTER_1-2D",
-                        direction="bull",
-                        entry=last_high,
-                        stop=last_low,
-                        actionable=f"ALERT if price > {last_high:.2f} (RevStrat bull); stop < {last_low:.2f}",
-                        note="RevStrat: after 1-2D, watch for 2U reversal.",
+                        setup="BEAR_CONTINUATION_AFTER_2D-2D",
+                        direction="bear",
+                        entry=last_low,
+                        stop=last_high,
+                        actionable=f"ALERT if price < {last_low:.2f} (continuation bear); stop > {last_high:.2f}",
+                        note="Optional continuation plan.",
                     )
                 )
             )
