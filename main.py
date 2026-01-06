@@ -3,6 +3,7 @@
 import sys
 import os
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -10,7 +11,8 @@ if PROJECT_ROOT not in sys.path:
 
 from config import DEV_MODE, DEV_TICKERS_LIMIT, MIN_MARKET_CAP, YF_BASE_FEEDS
 from snapshot import write_snapshot
-from zoneinfo import ZoneInfo
+
+from scheduler import should_run_for_any_timeframe, record_timeframes_run
 
 from universe.loader import load_universe
 from loaders.yahoo import load_ohlc
@@ -19,16 +21,23 @@ from strat.classify import classify_strat_candles
 from scoring.continuity import continuity_score
 from strat_signals import analyze_last_closed_setups, last_closed_index
 
+ET = ZoneInfo("America/New_York")
 
+# Scan all timeframes you want supported on the website
+TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H", "30M", "15M", "10M", "5M"]
 
-TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
-
+# Pull directly from Yahoo for what it already provides (1d, 60m, 5m)
 DIRECT = {
     "D": ("1d", None),
     "1H": ("60m", None),
+    "5M": ("5m", None),
 }
 
+# Derive (resample) everything else from the closest base feed
 DERIVED = {
+    "10M": ("5m", "10M"),
+    "15M": ("5m", "15M"),
+    "30M": ("5m", "30M"),
     "2H": ("60m", "2H"),
     "3H": ("60m", "3H"),
     "4H": ("60m", "4H"),
@@ -40,19 +49,31 @@ DERIVED = {
 
 
 def build_timeframe_frames(ticker: str):
+    """
+    Loads base Yahoo feeds from YF_BASE_FEEDS, then builds all requested timeframes
+    using DIRECT pulls + DERIVED resamples.
+    Returns:
+      frames: dict[str, DataFrame] (per timeframe like "4H", "D", "M")
+      feeds: dict[str, DataFrame]  (raw yahoo feeds like "1d", "60m", "5m")
+    """
     feeds = {}
 
     for interval, cfg in YF_BASE_FEEDS.items():
         df = load_ohlc(ticker, interval=interval, period=cfg["period"])
-        feeds[interval] = df.sort_values("timestamp").reset_index(drop=True) if df is not None and not df.empty else pd.DataFrame()
+        if df is not None and not df.empty:
+            feeds[interval] = df.sort_values("timestamp").reset_index(drop=True)
+        else:
+            feeds[interval] = pd.DataFrame()
 
     frames = {}
 
+    # Direct feeds mapped to timeframe keys
     for tf, (base_interval, _) in DIRECT.items():
         base = feeds.get(base_interval, pd.DataFrame())
         if base is not None and not base.empty:
             frames[tf] = base
 
+    # Resampled / derived timeframes
     for tf, (base_interval, derived_tf) in DERIVED.items():
         base = feeds.get(base_interval, pd.DataFrame())
         if base is not None and not base.empty:
@@ -62,20 +83,19 @@ def build_timeframe_frames(ticker: str):
 
 
 def get_current_price(feeds: dict) -> float | None:
-    df_60 = feeds.get("60m")
-    if df_60 is not None and not df_60.empty and "close" in df_60.columns:
-        try:
-            return float(df_60.iloc[-1]["close"])
-        except Exception:
-            pass
-
-    df_d = feeds.get("1d")
-    if df_d is not None and not df_d.empty and "close" in df_d.columns:
-        try:
-            return float(df_d.iloc[-1]["close"])
-        except Exception:
-            pass
-
+    """
+    Best-effort current price:
+    - prefer 5m last close
+    - fallback to 60m last close
+    - fallback to daily last close
+    """
+    for k in ("5m", "60m", "1d"):
+        df = feeds.get(k)
+        if df is not None and not df.empty and "close" in df.columns:
+            try:
+                return float(df.iloc[-1]["close"])
+            except Exception:
+                pass
     return None
 
 
@@ -90,9 +110,9 @@ def _next_plan_already_triggered(df_tf: pd.DataFrame, tf: str, sig) -> bool:
     - bull: later high > entry
     - bear: later low < entry
     """
-    if sig.kind != "NEXT":
+    if getattr(sig, "kind", None) != "NEXT":
         return False
-    if sig.entry is None or sig.direction not in ("bull", "bear"):
+    if getattr(sig, "entry", None) is None or getattr(sig, "direction", None) not in ("bull", "bear"):
         return False
 
     df_tf = df_tf.sort_values("timestamp").reset_index(drop=True)
@@ -111,11 +131,13 @@ def _next_plan_already_triggered(df_tf: pd.DataFrame, tf: str, sig) -> bool:
 def scan_ticker(ticker: str, scan_time: str):
     frames, feeds = build_timeframe_frames(ticker)
 
+    # Basic guard: needs daily history
     if "D" not in frames or frames["D"].empty or len(frames["D"]) < 50:
         return [], None
 
     current_price = get_current_price(feeds)
 
+    # Classify all frames
     classified = {}
     for tf, df in frames.items():
         if df is None or df.empty or len(df) < 3:
@@ -135,6 +157,7 @@ def scan_ticker(ticker: str, scan_time: str):
 
     rows = []
 
+    # Scan all target timeframes
     for tf in TARGET_TFS:
         df_tf = classified.get(tf)
         if df_tf is None or df_tf.empty or len(df_tf) < 3:
@@ -145,6 +168,7 @@ def scan_ticker(ticker: str, scan_time: str):
             continue
 
         for sig in signals:
+            # Drop stale NEXT plans (price already crossed entry after the setup candle)
             if _next_plan_already_triggered(df_tf, tf, sig):
                 continue
 
@@ -161,9 +185,11 @@ def scan_ticker(ticker: str, scan_time: str):
                     "tf": sig.tf,
                     "kind": sig.kind,
 
-                    # NEW: separate the two concepts
-                    "pattern": sig.pattern,   # what the last 2 candles were
-                    "setup": sig.setup,       # what we are planning to trade next
+                    # What last 2 closed candles were
+                    "pattern": sig.pattern,
+
+                    # What trade plan we are proposing next
+                    "setup": sig.setup,
 
                     "dir": sig.direction,
                     "actionable": sig.actionable,
@@ -189,9 +215,15 @@ def scan_ticker(ticker: str, scan_time: str):
 
 
 def main():
-    scan_time = pd.Timestamp.now(tz=ZoneInfo("America/New_York")).strftime(
-        "%Y-%m-%d %H:%M:%S %Z"
-    )
+    # Gate the scan to only run when at least one timeframe has a new CLOSED candle
+    should_run, debug = should_run_for_any_timeframe(TARGET_TFS)
+    print("[Scheduler] Check:", debug)
+
+    if not should_run:
+        print("[Scheduler] No new closed candles detected across target timeframes. Exiting.")
+        return
+
+    scan_time = pd.Timestamp.now(tz=ET).strftime("%Y-%m-%d %H:%M:%S %Z")
 
     tickers = load_universe(min_market_cap=MIN_MARKET_CAP)
 
@@ -225,7 +257,11 @@ def main():
             print(f"Error scanning {ticker}: {e}")
 
     write_snapshot(all_rows)
+    record_timeframes_run(TARGET_TFS)
+
     print(f"\nSnapshot written: {len(all_rows)} rows\n")
+    print("[Scheduler] Recorded last closed timestamps for this run.")
+
 
 if __name__ == "__main__":
     main()
