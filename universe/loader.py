@@ -10,20 +10,51 @@ from typing import List
 
 import pandas as pd
 
-from config import (
-    DEV_MODE,
-    DEV_TICKERS_LIMIT,
-    MIN_MARKET_CAP,
-    PRIORITY_TOP_STOCKS,
-    MAX_TICKERS_PER_RUN,
-    PRIORITY_PER_RUN,
-    ROTATION_PER_RUN,
-    UNIVERSE_CACHE_TTL_SEC,
-)
+# -------------------------
+# SAFE CONFIG IMPORTS
+# -------------------------
+# IMPORTANT:
+# If any config key is missing or invalid (like DEV_MODE=false),
+# we still want universe to load with defaults instead of crashing the whole scan.
+try:
+    import config as _cfg  # type: ignore
+except Exception:
+    _cfg = None  # noqa
 
+
+def _cfg_get(name: str, default):
+    if _cfg is None:
+        return default
+    return getattr(_cfg, name, default)
+
+
+# Defaults (match what you’ve been asking for)
+DEV_MODE = bool(_cfg_get("DEV_MODE", True))
+DEV_TICKERS_LIMIT = int(_cfg_get("DEV_TICKERS_LIMIT", 10))
+
+# You requested to cap it at $1B now (instead of $10M)
+MIN_MARKET_CAP = int(_cfg_get("MIN_MARKET_CAP", 1_000_000_000))
+
+# “Top 1000 by cap” priority pool (we still rotate beyond this later)
+PRIORITY_TOP_STOCKS = int(_cfg_get("PRIORITY_TOP_STOCKS", 1000))
+
+# Per-run scanning limits
+MAX_TICKERS_PER_RUN = int(_cfg_get("MAX_TICKERS_PER_RUN", 400))
+PRIORITY_PER_RUN = int(_cfg_get("PRIORITY_PER_RUN", 250))
+ROTATION_PER_RUN = int(_cfg_get("ROTATION_PER_RUN", 150))
+
+# Cache TTL for universe tables/state
+UNIVERSE_CACHE_TTL_SEC = int(_cfg_get("UNIVERSE_CACHE_TTL_SEC", 24 * 3600))
+
+# -------------------------
+# SOURCES
+# -------------------------
 STOCKS_URL = "https://stockanalysis.com/list/biggest-companies/"
 ETFS_URL = "https://stockanalysis.com/etf/"
 
+# -------------------------
+# CACHE PATHS
+# -------------------------
 CACHE_DIR = "cache/universe"
 CACHE_STOCKS = os.path.join(CACHE_DIR, "stocks_biggest.csv")
 CACHE_ETFS = os.path.join(CACHE_DIR, "etfs_all.csv")
@@ -43,13 +74,16 @@ def _is_fresh(path: str, ttl_sec: int) -> bool:
 
 def _normalize_symbol(sym: str) -> str:
     """
-    Normalize symbols for Yahoo Finance:
-      - remove leading '$' (example: $ARM -> ARM)
-      - uppercase + strip whitespace
-      - BRK.B -> BRK-B
-      - keep only A-Z 0-9 and '-' (removes weird characters)
+    Normalize symbols for Yahoo Finance / yfinance.
+
+    Notes:
+    - StockAnalysis sometimes shows $TICKER (e.g., $ARM) → strip '$'
+    - BRK.B / BF.B / etc must become BRK-B for Yahoo
+    - Keep only A-Z 0-9 and '-' to avoid weird symbols
     """
     s = str(sym).strip().upper()
+    if not s:
+        return ""
     if s.startswith("$"):
         s = s[1:]
     s = s.replace(".", "-")
@@ -88,6 +122,7 @@ def _parse_market_cap_to_int(value) -> int | None:
 
 
 def _fetch_table(url: str) -> pd.DataFrame:
+    # Uses pandas.read_html (requires lxml installed — you already added it)
     tables = pd.read_html(url)
     if not tables:
         return pd.DataFrame()
@@ -98,7 +133,10 @@ def _load_stocks_biggest(force_refresh: bool = False) -> pd.DataFrame:
     _ensure_dirs()
 
     if not force_refresh and _is_fresh(CACHE_STOCKS, UNIVERSE_CACHE_TTL_SEC):
-        return pd.read_csv(CACHE_STOCKS)
+        try:
+            return pd.read_csv(CACHE_STOCKS)
+        except Exception:
+            pass
 
     df = _fetch_table(STOCKS_URL)
     if df.empty:
@@ -110,9 +148,13 @@ def _load_stocks_biggest(force_refresh: bool = False) -> pd.DataFrame:
 
     df["market_cap_int"] = df["Market Cap"].apply(_parse_market_cap_to_int)
     df = df.dropna(subset=["Symbol", "market_cap_int"]).copy()
-
     df["Symbol"] = df["Symbol"].astype(str).str.strip()
-    df.to_csv(CACHE_STOCKS, index=False)
+
+    try:
+        df.to_csv(CACHE_STOCKS, index=False)
+    except Exception:
+        pass
+
     return df
 
 
@@ -120,7 +162,10 @@ def _load_etfs_all(force_refresh: bool = False) -> pd.DataFrame:
     _ensure_dirs()
 
     if not force_refresh and _is_fresh(CACHE_ETFS, UNIVERSE_CACHE_TTL_SEC):
-        return pd.read_csv(CACHE_ETFS)
+        try:
+            return pd.read_csv(CACHE_ETFS)
+        except Exception:
+            pass
 
     df = _fetch_table(ETFS_URL)
     if df.empty:
@@ -133,7 +178,11 @@ def _load_etfs_all(force_refresh: bool = False) -> pd.DataFrame:
     df["Symbol"] = df["Symbol"].astype(str).str.strip()
     df = df.dropna(subset=["Symbol"]).copy()
 
-    df.to_csv(CACHE_ETFS, index=False)
+    try:
+        df.to_csv(CACHE_ETFS, index=False)
+    except Exception:
+        pass
+
     return df
 
 
@@ -175,12 +224,15 @@ def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
     stocks_df = _load_stocks_biggest()
     etfs_df = _load_etfs_all()
 
+    # market cap filter
     stocks_df = stocks_df[stocks_df["market_cap_int"] >= int(min_market_cap)].copy()
 
+    # Priority pool (top by cap)
     priority_raw = stocks_df["Symbol"].head(PRIORITY_TOP_STOCKS).tolist()
     priority = [_normalize_symbol(x) for x in priority_raw]
     priority = [x for x in priority if x]
 
+    # Rotation pool = remaining stocks + ETFs
     remaining_raw = stocks_df["Symbol"].iloc[PRIORITY_TOP_STOCKS:].tolist()
     remaining = [_normalize_symbol(x) for x in remaining_raw]
     remaining = [x for x in remaining if x]
@@ -200,7 +252,7 @@ def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
     offset = int(state.get("offset", 0)) if expansion_pool else 0
 
     take_rotation = min(ROTATION_PER_RUN, len(expansion_pool))
-    if take_rotation > 0:
+    if take_rotation > 0 and expansion_pool:
         start = offset % len(expansion_pool)
         end = start + take_rotation
         if end <= len(expansion_pool):
@@ -216,9 +268,11 @@ def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
 
     universe = _dedupe_keep_order(priority_batch + rotation_batch)
 
+    # DEV trims
     if DEV_MODE:
         universe = universe[:DEV_TICKERS_LIMIT]
 
+    # hard cap per run
     universe = universe[:MAX_TICKERS_PER_RUN]
 
     print(f"[Universe] Loaded: priority={len(priority_batch)}, rotation={len(rotation_batch)}, total={len(universe)}")
