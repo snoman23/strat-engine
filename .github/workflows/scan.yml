@@ -42,26 +42,18 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Ensure folders exist (avoid 'pathspec did not match' failures)
           mkdir -p cache/results cache/meta cache/universe
 
-          # Ensure state files exist so git add never hard-fails
           test -f cache/meta/last_run.json || echo '{}' > cache/meta/last_run.json
           test -f cache/universe/state.json || echo '{}' > cache/universe/state.json
 
-          # Add outputs
           git add cache/results/latest.csv cache/results/latest.json || true
           git add cache/meta/last_run.json || true
           git add cache/universe/state.json || true
-          git add cache/universe/*.csv || true
 
-          # If nothing changed, exit cleanly
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-
           git commit -m "Update scan results"
 
-          # Rebase onto latest remote to avoid non-fast-forward failures
           git pull --rebase origin main
-
-          # Push
           git push origin HEAD:main
+
