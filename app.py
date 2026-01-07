@@ -1,68 +1,132 @@
 # app.py
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
-st.set_page_config(layout="wide")
+
+st.set_page_config(page_title="STRAT Scanner", layout="wide")
 
 st.title("STRAT Scanner")
-st.caption(
-    "Educational / informational purposes only. Not financial advice. "
-    "Trading involves risk."
-)
+st.caption("Educational / informational purposes only. Not financial advice. Trading involves risk.")
 
-DATA_PATH = "cache/results/latest.csv"
 
-try:
-    df = pd.read_csv(DATA_PATH)
-except Exception:
-    st.warning("No scan results found yet.")
+@st.cache_data(ttl=60)
+def load_results(path: str) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+df = load_results("cache/results/latest.csv")
+
+if df.empty:
+    st.warning("No scan results found yet. If you just deployed, wait for GitHub Actions to write latest.csv.")
     st.stop()
 
-# Keep >= 1H only
-ALLOWED_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
-df = df[df["tf"].isin(ALLOWED_TFS)].copy()
+# Ensure expected columns exist
+for c in ["scan_time", "ticker", "tf", "kind", "pattern", "setup", "dir", "score", "current_price", "entry", "stop", "actionable"]:
+    if c not in df.columns:
+        df[c] = None
 
-# Round numbers
-for col in ["current_price", "entry", "stop"]:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+# Normalize types
+df["score"] = pd.to_numeric(df["score"], errors="coerce")
+df["current_price"] = pd.to_numeric(df["current_price"], errors="coerce")
+df["entry"] = pd.to_numeric(df["entry"], errors="coerce")
+df["stop"] = pd.to_numeric(df["stop"], errors="coerce")
 
-# Create a link column (supported everywhere)
-df["chart"] = df["ticker"].apply(lambda t: f"https://finance.yahoo.com/quote/{t}")
+# Drop low TFs (per your request)
+KEEP_TFS = ["Y", "Q", "M", "W", "D", "4H", "1H"]
+df = df[df["tf"].isin(KEEP_TFS)].copy()
 
-# Reorder columns
-preferred_cols = [
-    "ticker", "chart", "current_price",
-    "tf", "kind", "pattern", "setup", "dir",
-    "entry", "stop", "score", "note", "scan_time",
-]
-cols = [c for c in preferred_cols if c in df.columns]
-df = df[cols]
+# Optional: remove generic 2-2 noise (you asked to remove 2-2 unless part of larger setups)
+# Here we remove rows whose pattern contains no 1 or 3 at all.
+df["pattern"] = df["pattern"].astype(str)
+df = df[df["pattern"].str.contains("1|3", regex=True)].copy()
 
-def style_dir(val):
-    if val == "bull":
-        return "color: #16a34a; font-weight: 700"
-    if val == "bear":
-        return "color: #dc2626; font-weight: 700"
-    return ""
-
+# Scan time display
+last_scan = str(df["scan_time"].dropna().iloc[-1]) if df["scan_time"].dropna().any() else "unknown"
 st.subheader("Latest Scan Results")
+st.write(f"Last scan_time: **{last_scan}**")
 
+# Sidebar filters
+st.sidebar.header("Filters")
+
+ticker_query = st.sidebar.text_input("Ticker contains", value="")
+tf_sel = st.sidebar.multiselect("Timeframe", sorted(df["tf"].dropna().unique().tolist()), default=sorted(df["tf"].dropna().unique().tolist()))
+dir_sel = st.sidebar.multiselect("Direction", ["bull", "bear"], default=["bull", "bear"])
+kind_sel = st.sidebar.multiselect("Kind", sorted(df["kind"].dropna().unique().tolist()), default=sorted(df["kind"].dropna().unique().tolist()))
+setup_query = st.sidebar.text_input("Setup contains", value="")
+
+score_min = float(df["score"].min()) if df["score"].notna().any() else -999.0
+score_max = float(df["score"].max()) if df["score"].notna().any() else 999.0
+score_range = st.sidebar.slider("Score range", min_value=float(score_min), max_value=float(score_max), value=(float(score_min), float(score_max)))
+
+hide_triggered = st.sidebar.checkbox("Hide TRIGGERED", value=True)
+
+# Apply filters
+f = df.copy()
+
+if ticker_query.strip():
+    f = f[f["ticker"].astype(str).str.contains(ticker_query.strip().upper(), na=False)]
+
+if tf_sel:
+    f = f[f["tf"].isin(tf_sel)]
+
+if dir_sel:
+    f = f[f["dir"].isin(dir_sel)]
+
+if kind_sel:
+    f = f[f["kind"].isin(kind_sel)]
+
+if setup_query.strip():
+    f = f[f["setup"].astype(str).str.contains(setup_query.strip(), case=False, na=False)]
+
+f = f[(f["score"].fillna(0) >= score_range[0]) & (f["score"].fillna(0) <= score_range[1])]
+
+if hide_triggered:
+    f = f[f["kind"] != "TRIGGERED"]
+
+# Round prices to 2 decimals
+for col in ["current_price", "entry", "stop"]:
+    f[col] = f[col].round(2)
+
+# Add a Yahoo Finance link column (ticker clickable workaround)
+# Streamlit LinkColumn can't display dynamic text per-row reliably in your deployed version,
+# so we show ticker normally + a "Chart" link next to it.
+f["chart"] = f["ticker"].astype(str).apply(lambda t: f"https://finance.yahoo.com/quote/{t}/chart")
+
+# Color styling for bull/bear
+def style_dir(row):
+    if row.get("dir") == "bull":
+        return ["color: #0a7a0a" for _ in row]  # green
+    if row.get("dir") == "bear":
+        return ["color: #b00020" for _ in row]  # red
+    return ["" for _ in row]
+
+# Choose display columns
+cols = [
+    "ticker",
+    "current_price",
+    "tf",
+    "kind",
+    "pattern",
+    "setup",
+    "dir",
+    "score",
+    "entry",
+    "stop",
+    "actionable",
+    "chart",
+]
+cols = [c for c in cols if c in f.columns]
+f_out = f[cols].copy()
+
+# Render
 st.dataframe(
-    df.style.map(style_dir, subset=["dir"]),
-    column_config={
-        "chart": st.column_config.LinkColumn(
-            "Chart",
-            help="Open Yahoo Finance interactive chart",
-            display_text="Yahoo",
-        ),
-        "current_price": st.column_config.NumberColumn("Price", format="%.2f"),
-        "entry": st.column_config.NumberColumn("Entry", format="%.2f"),
-        "stop": st.column_config.NumberColumn("Stop", format="%.2f"),
-        "score": st.column_config.NumberColumn("Score"),
-    },
-    width="stretch",
-    height=800,
+    f_out.style.apply(style_dir, axis=1),
+    use_container_width=True,
 )
 
+st.caption("Tip: Use filters in the sidebar to narrow results by timeframe, direction, setup, score, or ticker.")
