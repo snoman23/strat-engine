@@ -1,12 +1,25 @@
 **/__pycache__/
 **/*.pyc
-cache/
 .env
 .venv/
 venv/
 .DS_Store
+
+# Ignore cache by default
+cache/*
+
 # Allow scanner outputs for hosting
 !cache/
 !cache/results/
 !cache/results/latest.csv
 !cache/results/latest.json
+
+# Allow scheduler + universe state (small JSON files)
+!cache/meta/
+!cache/meta/last_run.json
+!cache/universe/
+!cache/universe/state.json
+
+# (Optional) allow universe tables if you really want them persisted
+# If you don't need them committed, leave these commented out.
+# !cache/universe/*.csv
