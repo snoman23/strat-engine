@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List
 
 import pandas as pd
 
@@ -21,6 +20,7 @@ from config import (
     UNIVERSE_CACHE_TTL_SEC,
 )
 
+# StockAnalysis sources
 STOCKS_URL = "https://stockanalysis.com/list/biggest-companies/"
 ETFS_URL = "https://stockanalysis.com/etf/"
 
@@ -41,11 +41,21 @@ def _is_fresh(path: str, ttl_sec: int) -> bool:
     return age <= ttl_sec
 
 
+def _normalize_symbol(sym: str) -> str:
+    """
+    Normalize symbols for Yahoo Finance compatibility.
+    - StockAnalysis may return BRK.B / BF.B etc
+    - Yahoo Finance expects BRK-B / BF-B
+    """
+    s = str(sym).strip().upper()
+    s = s.replace(".", "-")
+    return s
+
+
 def _parse_market_cap_to_int(value) -> int | None:
     """
-    StockAnalysis market cap strings typically look like:
-      '4.55T', '911.31B', '245.78M', '-' etc
-    Return integer dollars.
+    Converts market cap strings like '4.55T', '911.31B', '245.78M' into integer dollars.
+    Returns None if missing/unparseable.
     """
     if value is None:
         return None
@@ -76,11 +86,11 @@ def _parse_market_cap_to_int(value) -> int | None:
 def _fetch_table(url: str) -> pd.DataFrame:
     """
     Uses pandas.read_html to parse the first main table.
+    Requires lxml installed (added to requirements.txt).
     """
     tables = pd.read_html(url)
     if not tables:
         return pd.DataFrame()
-    # Usually the first big table is index 0
     return tables[0].copy()
 
 
@@ -94,8 +104,6 @@ def _load_stocks_biggest(force_refresh: bool = False) -> pd.DataFrame:
     if df.empty:
         raise RuntimeError("Could not load stocks table from StockAnalysis.")
 
-    # Expected columns: ["No.", "Symbol", "Company Name", "Market Cap", ...]
-    # Normalize column names
     df.columns = [str(c).strip() for c in df.columns]
 
     if "Symbol" not in df.columns or "Market Cap" not in df.columns:
@@ -103,9 +111,8 @@ def _load_stocks_biggest(force_refresh: bool = False) -> pd.DataFrame:
 
     df["market_cap_int"] = df["Market Cap"].apply(_parse_market_cap_to_int)
     df = df.dropna(subset=["Symbol", "market_cap_int"]).copy()
-    df["Symbol"] = df["Symbol"].astype(str).str.strip()
 
-    # Save cache
+    df["Symbol"] = df["Symbol"].astype(str).str.strip()
     df.to_csv(CACHE_STOCKS, index=False)
     return df
 
@@ -151,9 +158,11 @@ def _write_state(state: dict) -> None:
 
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
-    out = []
+    out: List[str] = []
     for x in items:
-        if x and x not in seen:
+        if not x:
+            continue
+        if x not in seen:
             seen.add(x)
             out.append(x)
     return out
@@ -161,40 +170,41 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
 
 def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
     """
-    Universe logic (AUTO):
-      - Top 1000 US stocks by market cap (priority bucket)
-      - + all ETFs
-      - Filter stocks by min_market_cap (>= $1B)
-      - Per-run batching to keep runtime reasonable:
-          * Take PRIORITY_PER_RUN from Top 1000
-          * Then rotate through the remaining eligible pool with a persistent offset
+    AUTO Universe:
+      - Top PRIORITY_TOP_STOCKS US stocks by market cap (filtered by >= min_market_cap)
+      - + ALL ETFs
+      - Returns a per-run batch:
+          * PRIORITY_PER_RUN from the top bucket
+          * ROTATION_PER_RUN rotating from (remaining stocks + all ETFs)
+      - Rotation offset persisted in cache/universe/state.json
 
-    This prevents the "only A/B tickers" issue because we are NOT using alphabet slicing.
-    We are using a ranked list + rotation state.
+    This prevents alphabet bias and keeps runs manageable.
     """
 
-    # Load datasets
     stocks_df = _load_stocks_biggest()
     etfs_df = _load_etfs_all()
 
-    # Filter stocks by market cap
+    # Filter stocks by market cap threshold
     stocks_df = stocks_df[stocks_df["market_cap_int"] >= int(min_market_cap)].copy()
 
-    # Priority bucket = top N (still filtered by cap)
-    priority = stocks_df["Symbol"].head(PRIORITY_TOP_STOCKS).tolist()
+    # Priority bucket: top N by cap
+    priority_raw = stocks_df["Symbol"].head(PRIORITY_TOP_STOCKS).tolist()
+    priority = [_normalize_symbol(x) for x in priority_raw]
 
-    # Expansion pool = rest of eligible stocks + all ETFs
-    remaining_stocks = stocks_df["Symbol"].iloc[PRIORITY_TOP_STOCKS:].tolist()
-    all_etfs = etfs_df["Symbol"].tolist()
+    # Expansion pool: remaining eligible stocks + ALL ETFs
+    remaining_raw = stocks_df["Symbol"].iloc[PRIORITY_TOP_STOCKS:].tolist()
+    remaining_stocks = [_normalize_symbol(x) for x in remaining_raw]
+
+    etfs_raw = etfs_df["Symbol"].tolist()
+    all_etfs = [_normalize_symbol(x) for x in etfs_raw]
 
     expansion_pool = _dedupe_keep_order(remaining_stocks + all_etfs)
 
-    # Batched selection
-    # - Always include some priority each run
+    # Priority batch (always include some big names)
     take_priority = min(PRIORITY_PER_RUN, len(priority))
     priority_batch = priority[:take_priority]
 
-    # Rotate expansion pool
+    # Rotation batch
     state = _read_state()
     offset = int(state.get("offset", 0)) if expansion_pool else 0
 
@@ -215,13 +225,14 @@ def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
 
     universe = _dedupe_keep_order(priority_batch + rotation_batch)
 
-    # DEV mode hard limit (so local testing is fast)
+    # DEV mode limit
     if DEV_MODE:
         universe = universe[:DEV_TICKERS_LIMIT]
 
-    # Final per-run safety cap
+    # Hard safety cap
     universe = universe[:MAX_TICKERS_PER_RUN]
 
     print(f"[Universe] Loaded: priority={len(priority_batch)}, rotation={len(rotation_batch)}, total={len(universe)}")
     print(f"[Universe] Stock cap filter: >= ${int(min_market_cap):,}")
     return universe
+
