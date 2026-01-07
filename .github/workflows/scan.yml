@@ -42,18 +42,24 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+          # Always sync to latest remote FIRST (prevents non-fast-forward)
+          git fetch origin main
+          git rebase origin/main || (git rebase --abort && git reset --hard origin/main)
+
+          # Ensure folders exist
           mkdir -p cache/results cache/meta cache/universe
 
+          # Ensure state files exist so git add never fails
           test -f cache/meta/last_run.json || echo '{}' > cache/meta/last_run.json
           test -f cache/universe/state.json || echo '{}' > cache/universe/state.json
 
+          # Add outputs (only things we intend to version)
           git add cache/results/latest.csv cache/results/latest.json || true
           git add cache/meta/last_run.json || true
           git add cache/universe/state.json || true
 
+          # If nothing changed, exit cleanly
           git diff --cached --quiet && echo "No changes to commit" && exit 0
+
           git commit -m "Update scan results"
-
-          git pull --rebase origin main
           git push origin HEAD:main
-
