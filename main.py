@@ -1,4 +1,5 @@
 # main.py
+
 import sys
 import os
 import pandas as pd
@@ -8,7 +9,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from config import DEV_MODE, DEV_TICKERS_LIMIT, MIN_MARKET_CAP, DEV_YF_BASE_FEEDS
+from config import DEV_MODE, DEV_TICKERS_LIMIT, MIN_MARKET_CAP, DEV_YF_BASE_FEEDS, YF_BASE_FEEDS
 from snapshot import write_snapshot
 
 from universe.loader import load_universe
@@ -38,19 +39,51 @@ DERIVED = {
     "Y": ("1d", "Y"),
 }
 
-
 WEIGHTS = {"Y": 5, "Q": 4, "M": 3, "W": 2, "D": 1}
 
 
+# -----------------------------
+# Resolution guards (prevents resample-down failures)
+# -----------------------------
+def _infer_resolution_seconds(df: pd.DataFrame) -> int:
+    if df is None or df.empty or "timestamp" not in df.columns or len(df) < 3:
+        return 0
+    ts = pd.to_datetime(df["timestamp"], errors="coerce").dropna().sort_values()
+    if len(ts) < 3:
+        return 0
+    diffs = ts.diff().dropna().dt.total_seconds()
+    if diffs.empty:
+        return 0
+    return int(diffs.median())
+
+
+def _is_ok_base_for_60m(df_60: pd.DataFrame) -> bool:
+    """
+    We can only derive 2H/3H/4H if the base feed is truly ~60 minutes.
+    Some tickers return 4H or 1D intraday "pretending" to be 60m -> skip derived TFs then.
+    """
+    res = _infer_resolution_seconds(df_60)
+    if res == 0:
+        return False
+    return res <= 3600 * 2  # allow some irregularity
+
+
+def _is_ok_base_for_1d(df_d: pd.DataFrame) -> bool:
+    res = _infer_resolution_seconds(df_d)
+    if res == 0:
+        return False
+    return res >= 3600 * 12  # daily-ish
+
+
+# -----------------------------
+# Frame builder
+# -----------------------------
 def build_timeframe_frames(ticker: str):
     # Choose feeds (DEV or FULL)
-    YF_BASE_FEEDS = DEV_YF_BASE_FEEDS if DEV_MODE else {
-        "1d": {"period": "max"},
-        "60m": {"period": "730d"},  # Yahoo limit for many tickers
-    }
+    feeds_cfg = DEV_YF_BASE_FEEDS if DEV_MODE else YF_BASE_FEEDS
 
-    feeds = {}
-    for interval, cfg in YF_BASE_FEEDS.items():
+    feeds: dict[str, pd.DataFrame] = {}
+    for interval, cfg in feeds_cfg.items():
         df = load_ohlc(ticker, interval=interval, period=cfg["period"])
         feeds[interval] = (
             df.sort_values("timestamp").reset_index(drop=True)
@@ -58,7 +91,7 @@ def build_timeframe_frames(ticker: str):
             else pd.DataFrame()
         )
 
-    frames = {}
+    frames: dict[str, pd.DataFrame] = {}
 
     # Direct TFs
     for tf, (base_interval, _) in DIRECT.items():
@@ -66,15 +99,29 @@ def build_timeframe_frames(ticker: str):
         if base is not None and not base.empty:
             frames[tf] = base
 
-    # Derived TFs
+    # Derived TFs with strict guards
+    base_60 = feeds.get("60m", pd.DataFrame())
+    base_1d = feeds.get("1d", pd.DataFrame())
+
+    ok_60 = base_60 is not None and not base_60.empty and _is_ok_base_for_60m(base_60)
+    ok_1d = base_1d is not None and not base_1d.empty and _is_ok_base_for_1d(base_1d)
+
     for tf, (base_interval, derived_tf) in DERIVED.items():
-        base = feeds.get(base_interval, pd.DataFrame())
-        if base is not None and not base.empty:
-            frames[tf] = resample_timeframe(base, derived_tf)
+        if base_interval == "60m":
+            if not ok_60:
+                continue
+            frames[tf] = resample_timeframe(base_60, derived_tf)
+        elif base_interval == "1d":
+            if not ok_1d:
+                continue
+            frames[tf] = resample_timeframe(base_1d, derived_tf)
 
     return frames, feeds
 
 
+# -----------------------------
+# Price + bias score
+# -----------------------------
 def get_current_price(feeds: dict) -> float | None:
     # Prefer last close from 60m, else daily
     df_60 = feeds.get("60m")
@@ -110,6 +157,9 @@ def compute_bias_score(context: dict) -> int:
     return score
 
 
+# -----------------------------
+# Scanner
+# -----------------------------
 def scan_ticker(ticker: str, scan_time: str):
     frames, feeds = build_timeframe_frames(ticker)
 
@@ -118,8 +168,9 @@ def scan_ticker(ticker: str, scan_time: str):
         return []
 
     current_price = get_current_price(feeds)
+    px = round(float(current_price), 2) if current_price is not None else None
 
-    classified = {}
+    classified: dict[str, pd.DataFrame] = {}
     for tf, df in frames.items():
         if df is None or df.empty or len(df) < 3:
             continue
@@ -150,26 +201,19 @@ def scan_ticker(ticker: str, scan_time: str):
             continue
 
         for sig in signals:
-            # Remove TRIGGERED rows completely (your request)
+            # Remove TRIGGERED rows completely
             if getattr(sig, "kind", "") == "TRIGGERED":
                 continue
 
-            # Round prices for output readability
+            # Round prices for readability
             entry = round(float(sig.entry), 2) if sig.entry is not None else None
             stop = round(float(sig.stop), 2) if sig.stop is not None else None
 
-            px = round(float(current_price), 2) if current_price is not None else None
-
-            # Chart link (for UI)
             chart_url = f"https://finance.yahoo.com/quote/{ticker}/chart"
 
-            # Helpful: whether signal aligns with bias
             aligned = None
             if sig.direction in ("bull", "bear"):
-                if sig.direction == "bull":
-                    aligned = bias_score > 0
-                else:
-                    aligned = bias_score < 0
+                aligned = (bias_score > 0) if sig.direction == "bull" else (bias_score < 0)
 
             rows.append(
                 {
@@ -179,21 +223,21 @@ def scan_ticker(ticker: str, scan_time: str):
                     "current_price": px,
 
                     "tf": sig.tf,
-                    "pattern": sig.pattern,   # last 2 closed candles pattern
-                    "setup": sig.setup,       # what we are planning to trade next
+                    "pattern": sig.pattern,
+                    "setup": sig.setup,
                     "dir": sig.direction,
 
                     "entry": entry,
                     "stop": stop,
 
-                    # IMPORTANT: score is market bias only (not flipped per setup)
+                    # bias-only score (same regardless of setup direction)
                     "score": bias_score,
                     "aligned": aligned,
 
                     "actionable": sig.actionable,
                     "note": sig.note,
 
-                    # keep raw context for debugging / future features
+                    # keep context columns (helps debugging and UX later)
                     "ctx_Y": context.get("Y"),
                     "ctx_Q": context.get("Q"),
                     "ctx_M": context.get("M"),
