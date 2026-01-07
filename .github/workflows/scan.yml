@@ -37,22 +37,31 @@ jobs:
         run: |
           python main.py
 
-      - name: Commit updated results + state
+      - name: Commit updated results
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Results for Streamlit
+          # Ensure folders exist (avoid 'pathspec did not match' failures)
+          mkdir -p cache/results cache/meta cache/universe
+
+          # Ensure state files exist so git add never hard-fails
+          test -f cache/meta/last_run.json || echo '{}' > cache/meta/last_run.json
+          test -f cache/universe/state.json || echo '{}' > cache/universe/state.json
+
+          # Add outputs
           git add cache/results/latest.csv cache/results/latest.json || true
-
-          # Scheduler state (prevents re-running same closed candle)
           git add cache/meta/last_run.json || true
-
-          # Universe rotation state (prevents scanning same slice forever)
           git add cache/universe/state.json || true
-
-          # Universe table caches (keeps runs faster)
           git add cache/universe/*.csv || true
 
-          git commit -m "Update scan results" || echo "No changes to commit"
-          git push
+          # If nothing changed, exit cleanly
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+
+          git commit -m "Update scan results"
+
+          # Rebase onto latest remote to avoid non-fast-forward failures
+          git pull --rebase origin main
+
+          # Push
+          git push origin HEAD:main
