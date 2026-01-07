@@ -6,41 +6,67 @@ import pandas as pd
 st.set_page_config(layout="wide")
 
 st.title("STRAT Scanner")
-st.caption("Educational / informational only — not financial advice.")
+st.caption(
+    "Educational / informational purposes only. "
+    "Not financial advice. Trading involves risk."
+)
 
 DATA_PATH = "cache/results/latest.csv"
 
+# =========================
+# LOAD DATA
+# =========================
 try:
     df = pd.read_csv(DATA_PATH)
 except Exception:
-    st.warning("No scan results available yet.")
+    st.warning("No scan results found yet. Scanner has not produced data.")
     st.stop()
 
 # =========================
-# FILTER TIMEFRAMES (>=1H)
+# FILTER TIMEFRAMES (>= 1H)
 # =========================
 ALLOWED_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
 df = df[df["tf"].isin(ALLOWED_TFS)].copy()
 
-# Round numbers for UX
+# =========================
+# FORMAT NUMBERS
+# =========================
 for col in ["current_price", "entry", "stop"]:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
 
-# Add Yahoo URL column (clickable)
-df["yahoo"] = df["ticker"].apply(lambda t: f"https://finance.yahoo.com/quote/{t}")
+# =========================
+# CLICKABLE TICKER COLUMN
+# =========================
+df["ticker_link"] = df["ticker"].apply(
+    lambda t: f"https://finance.yahoo.com/quote/{t}"
+)
 
-# Optional: reorder columns so link is near ticker
-preferred = [
-    "ticker", "yahoo", "current_price",
-    "tf", "kind", "pattern", "setup", "dir",
-    "entry", "stop", "score", "note",
+# =========================
+# COLUMN ORDER (UX)
+# =========================
+preferred_cols = [
+    "ticker_link",
+    "current_price",
+    "tf",
+    "kind",
+    "pattern",
+    "setup",
+    "dir",
+    "entry",
+    "stop",
+    "score",
+    "note",
     "scan_time",
 ]
-cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+
+cols = [c for c in preferred_cols if c in df.columns]
 df = df[cols]
 
-def color_dir(val):
+# =========================
+# STYLING
+# =========================
+def style_dir(val):
     if val == "bull":
         return "color: #16a34a; font-weight: 700"  # green
     if val == "bear":
@@ -50,15 +76,19 @@ def color_dir(val):
 st.subheader("Latest Scan Results")
 
 st.dataframe(
-    df.style.map(color_dir, subset=["dir"]),
+    df.style.map(style_dir, subset=["dir"]),
     column_config={
-        "yahoo": st.column_config.LinkColumn(
-            "Chart",
-            display_text="Yahoo",
+        "ticker_link": st.column_config.LinkColumn(
+            "Ticker",
+            display_text=lambda url: url.split("/")[-1],
             help="Open Yahoo Finance interactive chart",
-        )
+        ),
+        "current_price": st.column_config.NumberColumn("Price", format="%.2f"),
+        "entry": st.column_config.NumberColumn("Entry", format="%.2f"),
+        "stop": st.column_config.NumberColumn("Stop", format="%.2f"),
+        "score": st.column_config.NumberColumn("Score"),
     },
     width="stretch",
-    height=750,
+    height=800,
 )
 
