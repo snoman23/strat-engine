@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Optional
+from typing import Optional, List
 
 import pandas as pd
 import yfinance as yf
@@ -13,13 +13,22 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(PROJECT_ROOT, "cache", "ohlc")
 
 
+# -----------------------------
+# Helpers: cache
+# -----------------------------
 def _ensure_cache_dir() -> None:
     os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 def _cache_path(ticker: str, interval: str) -> str:
-    safe_ticker = ticker.replace("/", "_").replace("^", "")
-    safe_interval = interval.replace(" ", "")
+    safe_ticker = (
+        str(ticker)
+        .replace("/", "_")
+        .replace("^", "")
+        .replace("=", "_")
+        .replace(" ", "")
+    )
+    safe_interval = str(interval).replace(" ", "")
     return os.path.join(CACHE_DIR, f"{safe_ticker}_{safe_interval}.csv")
 
 
@@ -30,6 +39,120 @@ def _is_cache_fresh(path: str, max_age_seconds: int) -> bool:
     return age <= max_age_seconds
 
 
+def _read_cache(path: str) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.dropna(subset=["timestamp"])
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+# -----------------------------
+# Helpers: download + normalize
+# -----------------------------
+_INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
+
+
+def _normalize_download(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize yfinance download() output into:
+      timestamp, open, high, low, close, volume
+    """
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+
+    # yfinance sometimes returns MultiIndex columns
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0] for c in df.columns]
+
+    df = df.rename(
+        columns={
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Adj Close": "adj_close",
+            "Volume": "volume",
+        }
+    ).reset_index()
+
+    # Timestamp column can be Date or Datetime
+    ts_col = None
+    if "Date" in df.columns:
+        ts_col = "Date"
+    elif "Datetime" in df.columns:
+        ts_col = "Datetime"
+    else:
+        ts_col = df.columns[0]
+
+    df = df.rename(columns={ts_col: "timestamp"})
+
+    keep = ["timestamp", "open", "high", "low", "close", "volume"]
+    df = df[[c for c in keep if c in df.columns]].copy()
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+
+    # Ensure numeric
+    for c in ["open", "high", "low", "close", "volume"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["open", "high", "low", "close"])
+
+    return df
+
+
+def _download_once(ticker: str, interval: str, period: str) -> pd.DataFrame:
+    raw = yf.download(
+        tickers=ticker,
+        interval=interval,
+        period=period,
+        auto_adjust=False,
+        prepost=False,
+        progress=False,
+        threads=False,
+    )
+    return _normalize_download(raw)
+
+
+def _download_with_fallback(ticker: str, interval: str, period: str) -> pd.DataFrame:
+    """
+    Yahoo can reject intraday periods for some tickers (e.g., newer IPOs like ARM).
+    So for intraday, we try a list of progressively smaller periods.
+    """
+    interval_norm = interval.strip()
+
+    # If not intraday, just do one shot
+    if interval_norm not in _INTRADAY_INTERVALS:
+        return _download_once(ticker, interval_norm, period)
+
+    # Intraday fallback chain (largest -> smallest)
+    # Even if caller asks 730d, some tickers only support shorter.
+    fallback_periods: List[str] = []
+    if period:
+        fallback_periods.append(period)
+
+    # Ensure we always try sensible intraday windows
+    for p in ["730d", "365d", "180d", "60d", "30d", "7d"]:
+        if p not in fallback_periods:
+            fallback_periods.append(p)
+
+    for p in fallback_periods:
+        df = _download_once(ticker, interval_norm, p)
+        if df is not None and not df.empty:
+            return df
+
+    return pd.DataFrame()
+
+
+# -----------------------------
+# Public API
+# -----------------------------
 def load_ohlc(
     ticker: str,
     interval: str = "1d",
@@ -41,75 +164,38 @@ def load_ohlc(
 
     Returns columns:
       timestamp, open, high, low, close, volume
+
+    Behavior:
+      - Serves fresh cache if available
+      - Otherwise downloads from Yahoo
+      - For intraday (60m/30m/etc), automatically falls back to shorter periods
+        if Yahoo rejects the requested range (ARM/new IPOs)
+      - If Yahoo fails, returns stale cache if available
     """
     _ensure_cache_dir()
 
     interval = interval.strip()
     if max_age_seconds is None:
-        max_age_seconds = CACHE_TTL.get(interval, 2 * 3600)
+        max_age_seconds = int(CACHE_TTL.get(interval, 2 * 3600))
 
     path = _cache_path(ticker, interval)
 
     # 1) Serve cache if fresh
     if _is_cache_fresh(path, max_age_seconds):
-        try:
-            df = pd.read_csv(path)
-            if not df.empty:
-                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-                df = df.dropna(subset=["timestamp"])
-                return df
-        except Exception:
-            pass  # fall through
+        cached = _read_cache(path)
+        if not cached.empty:
+            return cached
 
-    # 2) Fetch from Yahoo
-    data = yf.download(
-        tickers=ticker,
-        interval=interval,
-        period=period,
-        auto_adjust=False,
-        prepost=False,
-        progress=False,
-        threads=False,
-    )
+    # 2) Fetch from Yahoo with fallback (intraday-safe)
+    data = _download_with_fallback(ticker=ticker, interval=interval, period=period)
 
-    if data is None or len(data) == 0:
-        # 3) If Yahoo fails, return stale cache if available (self-sustaining)
+    if data is None or data.empty:
+        # 3) If Yahoo fails, return stale cache if available
         if os.path.exists(path):
-            try:
-                df = pd.read_csv(path)
-                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-                df = df.dropna(subset=["timestamp"])
-                return df
-            except Exception:
-                return pd.DataFrame()
+            cached = _read_cache(path)
+            if not cached.empty:
+                return cached
         return pd.DataFrame()
-
-    # Handle multiindex columns
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = [c[0] for c in data.columns]
-
-    data = data.rename(
-        columns={
-            "Open": "open",
-            "High": "high",
-            "Low": "low",
-            "Close": "close",
-            "Adj Close": "adj_close",
-            "Volume": "volume",
-        }
-    ).reset_index()
-
-    ts_col = "Date" if "Date" in data.columns else ("Datetime" if "Datetime" in data.columns else None)
-    if ts_col is None:
-        ts_col = data.columns[0]
-
-    data = data.rename(columns={ts_col: "timestamp"})
-
-    keep = ["timestamp", "open", "high", "low", "close", "volume"]
-    data = data[[c for c in keep if c in data.columns]].copy()
-
-    data["timestamp"] = pd.to_datetime(data["timestamp"], errors="coerce")
-    data = data.dropna(subset=["timestamp"])
 
     # 4) Write cache
     try:
