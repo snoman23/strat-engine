@@ -2,7 +2,7 @@ name: Run STRAT Scanner
 
 on:
   schedule:
-    # Mon–Fri hourly (avoids queue/cancel with ~31m runtime)
+    # Mon–Fri hourly (runs queue if needed)
     - cron: "0 * * * 1-5"
   workflow_dispatch: {}
 
@@ -23,6 +23,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sync with remote (avoid non-fast-forward)
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -42,10 +47,6 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Always sync to latest remote FIRST (prevents non-fast-forward)
-          git fetch origin main
-          git rebase origin/main || (git rebase --abort && git reset --hard origin/main)
-
           # Ensure folders exist
           mkdir -p cache/results cache/meta cache/universe
 
@@ -62,4 +63,10 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" && exit 0
 
           git commit -m "Update scan results"
+
+          # Pull latest again in case another run pushed while we were scanning
+          git fetch origin main
+          git rebase origin/main || (git rebase --abort && git reset --hard origin/main)
+
           git push origin HEAD:main
+
