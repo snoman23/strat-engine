@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import re
 from typing import List
 
 import pandas as pd
@@ -43,12 +44,25 @@ def _is_fresh(path: str, ttl_sec: int) -> bool:
 
 def _normalize_symbol(sym: str) -> str:
     """
-    Normalize symbols for Yahoo Finance compatibility.
-    - StockAnalysis may return BRK.B / BF.B etc
-    - Yahoo Finance expects BRK-B / BF-B
+    Normalize symbols for Yahoo Finance:
+      - remove leading '$' (your log shows $ARM)
+      - trim whitespace
+      - uppercase
+      - convert class shares: BRK.B -> BRK-B
+      - strip weird characters (keep A-Z, 0-9, '-', '^' removed)
     """
     s = str(sym).strip().upper()
+
+    # Remove leading $ if present (StockAnalysis sometimes shows $TICKER)
+    if s.startswith("$"):
+        s = s[1:]
+
+    # Yahoo class shares use hyphen
     s = s.replace(".", "-")
+
+    # Remove spaces and most special chars; keep A-Z 0-9 and -
+    s = re.sub(r"[^A-Z0-9\-]", "", s)
+
     return s
 
 
@@ -84,10 +98,6 @@ def _parse_market_cap_to_int(value) -> int | None:
 
 
 def _fetch_table(url: str) -> pd.DataFrame:
-    """
-    Uses pandas.read_html to parse the first main table.
-    Requires lxml installed (added to requirements.txt).
-    """
     tables = pd.read_html(url)
     if not tables:
         return pd.DataFrame()
@@ -105,7 +115,6 @@ def _load_stocks_biggest(force_refresh: bool = False) -> pd.DataFrame:
         raise RuntimeError("Could not load stocks table from StockAnalysis.")
 
     df.columns = [str(c).strip() for c in df.columns]
-
     if "Symbol" not in df.columns or "Market Cap" not in df.columns:
         raise RuntimeError(f"Unexpected columns in stocks table: {list(df.columns)}")
 
@@ -128,7 +137,6 @@ def _load_etfs_all(force_refresh: bool = False) -> pd.DataFrame:
         raise RuntimeError("Could not load ETFs table from StockAnalysis.")
 
     df.columns = [str(c).strip() for c in df.columns]
-
     if "Symbol" not in df.columns:
         raise RuntimeError(f"Unexpected columns in ETFs table: {list(df.columns)}")
 
@@ -171,40 +179,40 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
 def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
     """
     AUTO Universe:
-      - Top PRIORITY_TOP_STOCKS US stocks by market cap (filtered by >= min_market_cap)
+      - Top PRIORITY_TOP_STOCKS US stocks by market cap (>= min_market_cap)
       - + ALL ETFs
-      - Returns a per-run batch:
-          * PRIORITY_PER_RUN from the top bucket
+      - Per-run batch:
+          * PRIORITY_PER_RUN from top bucket
           * ROTATION_PER_RUN rotating from (remaining stocks + all ETFs)
       - Rotation offset persisted in cache/universe/state.json
-
-    This prevents alphabet bias and keeps runs manageable.
     """
 
     stocks_df = _load_stocks_biggest()
     etfs_df = _load_etfs_all()
 
-    # Filter stocks by market cap threshold
     stocks_df = stocks_df[stocks_df["market_cap_int"] >= int(min_market_cap)].copy()
 
-    # Priority bucket: top N by cap
+    # Priority bucket
     priority_raw = stocks_df["Symbol"].head(PRIORITY_TOP_STOCKS).tolist()
     priority = [_normalize_symbol(x) for x in priority_raw]
+    priority = [x for x in priority if x]  # drop blanks
 
-    # Expansion pool: remaining eligible stocks + ALL ETFs
+    # Remaining stocks + all ETFs
     remaining_raw = stocks_df["Symbol"].iloc[PRIORITY_TOP_STOCKS:].tolist()
-    remaining_stocks = [_normalize_symbol(x) for x in remaining_raw]
+    remaining = [_normalize_symbol(x) for x in remaining_raw]
+    remaining = [x for x in remaining if x]
 
     etfs_raw = etfs_df["Symbol"].tolist()
     all_etfs = [_normalize_symbol(x) for x in etfs_raw]
+    all_etfs = [x for x in all_etfs if x]
 
-    expansion_pool = _dedupe_keep_order(remaining_stocks + all_etfs)
+    expansion_pool = _dedupe_keep_order(remaining + all_etfs)
 
-    # Priority batch (always include some big names)
+    # Always include some priority names
     take_priority = min(PRIORITY_PER_RUN, len(priority))
     priority_batch = priority[:take_priority]
 
-    # Rotation batch
+    # Rotate through the rest
     state = _read_state()
     offset = int(state.get("offset", 0)) if expansion_pool else 0
 
@@ -225,14 +233,11 @@ def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
 
     universe = _dedupe_keep_order(priority_batch + rotation_batch)
 
-    # DEV mode limit
     if DEV_MODE:
         universe = universe[:DEV_TICKERS_LIMIT]
 
-    # Hard safety cap
     universe = universe[:MAX_TICKERS_PER_RUN]
 
     print(f"[Universe] Loaded: priority={len(priority_batch)}, rotation={len(rotation_batch)}, total={len(universe)}")
     print(f"[Universe] Stock cap filter: >= ${int(min_market_cap):,}")
     return universe
-
