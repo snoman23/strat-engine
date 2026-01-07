@@ -35,7 +35,7 @@ ROTATION_PER_RUN = MAX_TICKERS_PER_RUN - PRIORITY_PER_RUN
 # Your engine resamples from 60m and 1d for higher timeframes.
 DEV_YF_BASE_FEEDS = {
     "1d": {"period": "max"},
-    "60m": {"period": "730d"},
+    "60m": {"period": "60d"},
 }
 
 # For prod, you can keep the same feeds unless you add lower timeframes later.
