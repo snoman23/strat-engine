@@ -7,14 +7,13 @@ from typing import List, Optional
 import pandas as pd
 from zoneinfo import ZoneInfo
 
-
 NY = ZoneInfo("America/New_York")
 
 
 @dataclass
 class StratSignal:
     tf: str
-    kind: str  # "NEXT" or "TRIGGERED" (you can filter TRIGGERED out in main/app)
+    kind: str  # "NEXT" or "TRIGGERED" (main.py filters TRIGGERED out)
     pattern: str
     setup: str
     direction: Optional[str]  # "bull" | "bear" | None
@@ -35,18 +34,19 @@ class StratSignal:
     last_low: float
 
 
-def _to_ny(ts: pd.Timestamp) -> pd.Timestamp:
-    t = pd.to_datetime(ts)
+def _to_ny(ts) -> pd.Timestamp:
+    t = pd.to_datetime(ts, errors="coerce")
+    if pd.isna(t):
+        return pd.Timestamp.now(tz=NY)
     if t.tzinfo is None:
-        # treat naive timestamps as NY dates
+        # interpret naive as NY
         return t.tz_localize(NY)
     return t.tz_convert(NY)
 
 
 def _market_close_dt(date_ts: pd.Timestamp) -> pd.Timestamp:
     """
-    Returns 4:30pm ET on the date of `date_ts`.
-    (You asked to use 4:30pm ET as the daily close reference for next-day scanning.)
+    Use 4:30pm ET as our "day close" reference (your earlier preference).
     """
     d = _to_ny(date_ts).date()
     return pd.Timestamp(year=d.year, month=d.month, day=d.day, hour=16, minute=30, tz=NY)
@@ -54,13 +54,14 @@ def _market_close_dt(date_ts: pd.Timestamp) -> pd.Timestamp:
 
 def last_closed_index(tf: str, df_tf: pd.DataFrame) -> int:
     """
-    Returns the index (negative index) of the last CLOSED bar for a given timeframe.
+    Returns negative index of last CLOSED bar for given timeframe.
 
-    Critical behavior:
-    - For W/M/Q/Y resampled bars labeled with a future period-end timestamp,
-      we must treat that bar as OPEN and use the prior one.
-    - For intraday bars, if we're currently inside that bar's window, it's OPEN.
-    - For Daily, treat today's bar as OPEN until 4:30pm ET.
+    Key fix:
+    - 1H data from yfinance is typically timestamped by BAR START time.
+      So a bar is CLOSED if now >= timestamp + 1 hour.
+    - 2H/3H/4H are resampled by us with label='right' (timestamp is BAR END),
+      so a bar is CLOSED if now >= timestamp.
+    - W/M/Q/Y resampled label right -> timestamp often in the future for current open period.
     """
     if df_tf is None or df_tf.empty or "timestamp" not in df_tf.columns:
         return -1
@@ -68,43 +69,51 @@ def last_closed_index(tf: str, df_tf: pd.DataFrame) -> int:
     tf = tf.strip().upper()
     now = pd.Timestamp.now(tz=NY)
 
+    # last row timestamp in NY
     ts_last = _to_ny(df_tf.iloc[-1]["timestamp"])
 
-    # Helper to decide if the last bar is open by "end timestamp in the future"
-    # Works great for W-FRI, ME, QE, YE where last bar can be labeled in the future.
+    # -----------------------------
+    # Higher TFs labeled at period end
+    # -----------------------------
     if tf in ("W", "M", "Q", "Y"):
-        # If the labeled period end is in the future, it's definitely open
+        # If label is in the future, it's definitely open
         if ts_last > now:
             return -2
-        # Even if not in the future, it could still be open for the current period:
-        # Weekly: if we're before Fri 4:30pm of that labeled date
-        if tf == "W":
-            if now < _market_close_dt(ts_last):
-                return -2
-        # Monthly / Quarterly / Yearly: if we're before 4:30pm of the labeled period end date
-        if tf in ("M", "Q", "Y"):
-            if now < _market_close_dt(ts_last):
-                return -2
+
+        # Also treat it open until 4:30pm of its label date
+        if now < _market_close_dt(ts_last):
+            return -2
+
         return -1
 
-    # Daily: treat today's daily bar open until 4:30pm ET
+    # -----------------------------
+    # Daily: today's bar open until 4:30pm ET
+    # -----------------------------
     if tf == "D":
         if ts_last.date() == now.date() and now < _market_close_dt(ts_last):
             return -2
         return -1
 
-    # Intraday hour-based: treat the latest bar open if now is before bar_end
-    # Your resampler labels bars at the right edge (bar end).
-    if tf in ("1H", "2H", "3H", "4H"):
-        hours = {"1H": 1, "2H": 2, "3H": 3, "4H": 4}[tf]
-        # bar end is ts_last; if now is before bar end, it's still open
-        if now < ts_last:
+    # -----------------------------
+    # 1H: timestamp is BAR START (Yahoo chart convention)
+    # bar end = start + 1 hour
+    # -----------------------------
+    if tf == "1H":
+        bar_end = ts_last + pd.Timedelta(hours=1)
+        if now < bar_end:
             return -2
-        # also protect against weird timestamps by ensuring now is at least end
-        # (if now is between start and end, you’ll usually have end timestamp in the future already)
         return -1
 
-    # Default: just use last row
+    # -----------------------------
+    # 2H/3H/4H: these are resampled by us with label='right' => timestamp is BAR END
+    # so open if now < ts_last
+    # -----------------------------
+    if tf in ("2H", "3H", "4H"):
+        if now < ts_last:
+            return -2
+        return -1
+
+    # Default
     return -1
 
 
@@ -117,8 +126,8 @@ def _fmt2(x: float) -> float:
 
 def analyze_last_closed_setups(df_tf: pd.DataFrame, tf: str) -> List[StratSignal]:
     """
-    Produces actionable "NEXT" plans based on the last 2 CLOSED candles (prev_closed, last_closed).
-    This prevents repainting from open higher-timeframe bars.
+    Generates NEXT plans using the last 2 CLOSED candles:
+      prev_closed, last_closed
     """
     if df_tf is None or df_tf.empty or len(df_tf) < 3:
         return []
@@ -128,7 +137,8 @@ def analyze_last_closed_setups(df_tf: pd.DataFrame, tf: str) -> List[StratSignal
     last_idx = last_closed_index(tf, df_tf)
     prev_idx = last_idx - 1
 
-    if abs(prev_idx) > len(df_tf) or abs(last_idx) > len(df_tf):
+    # guard
+    if len(df_tf) < abs(prev_idx):
         return []
 
     prev = df_tf.iloc[prev_idx]
@@ -147,14 +157,10 @@ def analyze_last_closed_setups(df_tf: pd.DataFrame, tf: str) -> List[StratSignal
 
     signals: List[StratSignal] = []
 
-    # We only care about actionable patterns involving 1 or 3 (your request).
-    # We also keep 2U-1 / 2D-1 because those are still "inside bar" setups.
-    # We are removing generic 2-2 stuff elsewhere (main/app filters).
-
-    # ---- INSIDE BAR SETUPS (ending with 1) ----
-    # prev is 2U or 2D or 3, last is 1 => inside break next candle
+    # -----------------------------
+    # INSIDE BAR (last = 1): plan both breaks
+    # -----------------------------
     if last_s == "1":
-        # Break UP plan
         signals.append(
             StratSignal(
                 tf=tf,
@@ -176,7 +182,6 @@ def analyze_last_closed_setups(df_tf: pd.DataFrame, tf: str) -> List[StratSignal
                 last_low=_fmt2(last_low),
             )
         )
-        # Break DOWN plan
         signals.append(
             StratSignal(
                 tf=tf,
@@ -199,17 +204,10 @@ def analyze_last_closed_setups(df_tf: pd.DataFrame, tf: str) -> List[StratSignal
             )
         )
 
-    # ---- OUTSIDE->INSIDE (3-1) ----
-    if prev_s == "3" and last_s == "1":
-        # same plans as inside break; keep it explicit
-        # (already covered above; no extra needed)
-
-        pass
-
-    # ---- REVERSAL STRATS (need a 3 or a 1 in the pattern somewhere) ----
-    # 2U-3 or 2D-3 are not “everywhere” but can happen; treat 3 as directionless and plan both sides
+    # -----------------------------
+    # OUTSIDE BAR (last = 3): plan both breaks
+    # -----------------------------
     if last_s == "3":
-        # Outside bar break both ways next candle (optional: you can keep or remove later)
         signals.append(
             StratSignal(
                 tf=tf,
