@@ -19,16 +19,10 @@ from strat.classify import classify_strat_candles
 from strat_signals import analyze_last_closed_setups, last_closed_index
 
 
-# Only show TF >= 1H
 TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
 
-# Pull only what Yahoo already provides
-DIRECT = {
-    "D": ("1d", None),
-    "1H": ("60m", None),
-}
+DIRECT = {"D": ("1d", None), "1H": ("60m", None)}
 
-# Derive the rest from 60m or 1d
 DERIVED = {
     "2H": ("60m", "2H"),
     "3H": ("60m", "3H"),
@@ -42,9 +36,6 @@ DERIVED = {
 WEIGHTS = {"Y": 5, "Q": 4, "M": 3, "W": 2, "D": 1}
 
 
-# -----------------------------
-# Resolution guards (prevents resample-down failures)
-# -----------------------------
 def _infer_resolution_seconds(df: pd.DataFrame) -> int:
     if df is None or df.empty or "timestamp" not in df.columns or len(df) < 3:
         return 0
@@ -58,28 +49,16 @@ def _infer_resolution_seconds(df: pd.DataFrame) -> int:
 
 
 def _is_ok_base_for_60m(df_60: pd.DataFrame) -> bool:
-    """
-    We can only derive 2H/3H/4H if the base feed is truly ~60 minutes.
-    Some tickers return 4H or 1D intraday "pretending" to be 60m -> skip derived TFs then.
-    """
     res = _infer_resolution_seconds(df_60)
-    if res == 0:
-        return False
-    return res <= 3600 * 2  # allow some irregularity
+    return res != 0 and res <= 3600 * 2
 
 
 def _is_ok_base_for_1d(df_d: pd.DataFrame) -> bool:
     res = _infer_resolution_seconds(df_d)
-    if res == 0:
-        return False
-    return res >= 3600 * 12  # daily-ish
+    return res != 0 and res >= 3600 * 12
 
 
-# -----------------------------
-# Frame builder
-# -----------------------------
 def build_timeframe_frames(ticker: str):
-    # Choose feeds (DEV or FULL)
     feeds_cfg = DEV_YF_BASE_FEEDS if DEV_MODE else YF_BASE_FEEDS
 
     feeds: dict[str, pd.DataFrame] = {}
@@ -93,13 +72,11 @@ def build_timeframe_frames(ticker: str):
 
     frames: dict[str, pd.DataFrame] = {}
 
-    # Direct TFs
     for tf, (base_interval, _) in DIRECT.items():
         base = feeds.get(base_interval, pd.DataFrame())
         if base is not None and not base.empty:
             frames[tf] = base
 
-    # Derived TFs with strict guards
     base_60 = feeds.get("60m", pd.DataFrame())
     base_1d = feeds.get("1d", pd.DataFrame())
 
@@ -119,11 +96,7 @@ def build_timeframe_frames(ticker: str):
     return frames, feeds
 
 
-# -----------------------------
-# Price + bias score
-# -----------------------------
 def get_current_price(feeds: dict) -> float | None:
-    # Prefer last close from 60m, else daily
     df_60 = feeds.get("60m")
     if df_60 is not None and not df_60.empty and "close" in df_60.columns:
         try:
@@ -142,11 +115,6 @@ def get_current_price(feeds: dict) -> float | None:
 
 
 def compute_bias_score(context: dict) -> int:
-    """
-    Score = market bias only (NOT per-signal direction).
-    + score => higher TFs bullish (more 2U)
-    - score => higher TFs bearish (more 2D)
-    """
     score = 0
     for tf, strat in context.items():
         w = WEIGHTS.get(tf, 0)
@@ -157,13 +125,56 @@ def compute_bias_score(context: dict) -> int:
     return score
 
 
-# -----------------------------
-# Scanner
-# -----------------------------
+def candlestick_name(o: float, h: float, l: float, c: float) -> str:
+    """
+    Heuristic candlestick naming based only on shape (no trend context).
+    We label “hammer-like” vs “hanging-man-like” based on candle color.
+    """
+    try:
+        o = float(o); h = float(h); l = float(l); c = float(c)
+    except Exception:
+        return "Unknown"
+
+    rng = max(h - l, 1e-9)
+    body = abs(c - o)
+    upper = h - max(o, c)
+    lower = min(o, c) - l
+
+    bull = c > o
+    bear = c < o
+
+    # Doji (very small body)
+    if body <= 0.10 * rng:
+        # Dragonfly / Gravestone variants
+        if lower >= 0.60 * rng and upper <= 0.15 * rng:
+            return "Dragonfly Doji (bullish-leaning)"
+        if upper >= 0.60 * rng and lower <= 0.15 * rng:
+            return "Gravestone Doji (bearish-leaning)"
+        return "Doji"
+
+    # Hammer-like / Hanging-man-like (long lower wick)
+    if lower >= 2.0 * body and upper <= 0.35 * body:
+        return "Bullish Hammer-like" if bull else "Bearish Hanging-Man-like"
+
+    # Inverted hammer-like / Shooting star-like (long upper wick)
+    if upper >= 2.0 * body and lower <= 0.35 * body:
+        return "Bullish Inverted Hammer-like" if bull else "Bearish Shooting-Star-like"
+
+    # Marubozu-like (very small wicks)
+    if upper <= 0.10 * rng and lower <= 0.10 * rng:
+        return "Bullish Marubozu-like" if bull else "Bearish Marubozu-like"
+
+    # Generic
+    if bull:
+        return "Bullish Candle"
+    if bear:
+        return "Bearish Candle"
+    return "Neutral Candle"
+
+
 def scan_ticker(ticker: str, scan_time: str):
     frames, feeds = build_timeframe_frames(ticker)
 
-    # Need at least daily history to do anything useful
     if "D" not in frames or frames["D"].empty or len(frames["D"]) < 50:
         return []
 
@@ -178,7 +189,7 @@ def scan_ticker(ticker: str, scan_time: str):
         df2 = df2.sort_values("timestamp").reset_index(drop=True)
         classified[tf] = df2
 
-    # Continuity context from last CLOSED candles (Y/Q/M/W/D)
+    # HTF context from last CLOSED candles
     context = {}
     for tf in ("Y", "Q", "M", "W", "D"):
         df_tf = classified.get(tf)
@@ -190,7 +201,6 @@ def scan_ticker(ticker: str, scan_time: str):
     bias_score = compute_bias_score(context)
 
     rows = []
-
     for tf in TARGET_TFS:
         df_tf = classified.get(tf)
         if df_tf is None or df_tf.empty or len(df_tf) < 3:
@@ -201,19 +211,16 @@ def scan_ticker(ticker: str, scan_time: str):
             continue
 
         for sig in signals:
-            # Remove TRIGGERED rows completely
             if getattr(sig, "kind", "") == "TRIGGERED":
                 continue
-
-            # Round prices for readability
-            entry = round(float(sig.entry), 2) if sig.entry is not None else None
-            stop = round(float(sig.stop), 2) if sig.stop is not None else None
 
             chart_url = f"https://finance.yahoo.com/quote/{ticker}/chart"
 
             aligned = None
             if sig.direction in ("bull", "bear"):
                 aligned = (bias_score > 0) if sig.direction == "bull" else (bias_score < 0)
+
+            last_candle_type = candlestick_name(sig.last_open, sig.last_high, sig.last_low, sig.last_close)
 
             rows.append(
                 {
@@ -227,17 +234,18 @@ def scan_ticker(ticker: str, scan_time: str):
                     "setup": sig.setup,
                     "dir": sig.direction,
 
-                    "entry": entry,
-                    "stop": stop,
+                    "entry": round(float(sig.entry), 2) if sig.entry is not None else None,
+                    "stop": round(float(sig.stop), 2) if sig.stop is not None else None,
 
-                    # bias-only score (same regardless of setup direction)
-                    "score": bias_score,
+                    "score": int(bias_score),
                     "aligned": aligned,
+
+                    "last_strat": sig.last_strat,
+                    "last_candle_type": last_candle_type,
 
                     "actionable": sig.actionable,
                     "note": sig.note,
 
-                    # keep context columns (helps debugging and UX later)
                     "ctx_Y": context.get("Y"),
                     "ctx_Q": context.get("Q"),
                     "ctx_M": context.get("M"),
@@ -256,7 +264,6 @@ def main():
     )
 
     tickers = load_universe(min_market_cap=MIN_MARKET_CAP)
-
     if DEV_MODE:
         tickers = tickers[:DEV_TICKERS_LIMIT]
         print("\n[Universe] DEV mode active\n")
@@ -265,25 +272,10 @@ def main():
     print(f"Scanning {len(tickers)} tickers...\n")
 
     all_rows = []
-
     for ticker in tickers:
         try:
             rows = scan_ticker(ticker, scan_time)
             all_rows.extend(rows)
-
-            if rows:
-                print(f"\n====================\nTICKER: {ticker}\n====================")
-                df_out = pd.DataFrame(rows)
-
-                cols = [
-                    "tf", "pattern", "setup", "dir",
-                    "current_price", "entry", "stop",
-                    "score", "aligned",
-                    "actionable",
-                ]
-                cols = [c for c in cols if c in df_out.columns]
-                print(df_out[cols].to_string(index=False))
-
         except Exception as e:
             print(f"Error scanning {ticker}: {e}")
 
