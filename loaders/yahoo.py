@@ -13,9 +13,6 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(PROJECT_ROOT, "cache", "ohlc")
 
 
-# -----------------------------
-# Helpers: cache
-# -----------------------------
 def _ensure_cache_dir() -> None:
     os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -27,6 +24,7 @@ def _cache_path(ticker: str, interval: str) -> str:
         .replace("^", "")
         .replace("=", "_")
         .replace(" ", "")
+        .replace(".", "-")
     )
     safe_interval = str(interval).replace(" ", "")
     return os.path.join(CACHE_DIR, f"{safe_ticker}_{safe_interval}.csv")
@@ -35,8 +33,7 @@ def _cache_path(ticker: str, interval: str) -> str:
 def _is_cache_fresh(path: str, max_age_seconds: int) -> bool:
     if not os.path.exists(path):
         return False
-    age = time.time() - os.path.getmtime(path)
-    return age <= max_age_seconds
+    return (time.time() - os.path.getmtime(path)) <= max_age_seconds
 
 
 def _read_cache(path: str) -> pd.DataFrame:
@@ -51,17 +48,10 @@ def _read_cache(path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-# -----------------------------
-# Helpers: download + normalize
-# -----------------------------
 _INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
 
 
 def _normalize_download(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalize yfinance download() output into:
-      timestamp, open, high, low, close, volume
-    """
     if df is None or len(df) == 0:
         return pd.DataFrame()
 
@@ -79,7 +69,6 @@ def _normalize_download(df: pd.DataFrame) -> pd.DataFrame:
         }
     ).reset_index()
 
-    ts_col = None
     if "Date" in df.columns:
         ts_col = "Date"
     elif "Datetime" in df.columns:
@@ -100,13 +89,11 @@ def _normalize_download(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df = df.dropna(subset=["open", "high", "low", "close"])
+    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
     return df
 
 
 def _download_once(ticker: str, interval: str, period: str) -> pd.DataFrame:
-    """
-    Single yfinance download with a hard request timeout to prevent hangs in Actions.
-    """
     raw = yf.download(
         tickers=ticker,
         interval=interval,
@@ -121,20 +108,23 @@ def _download_once(ticker: str, interval: str, period: str) -> pd.DataFrame:
 
 
 def _download_with_fallback(ticker: str, interval: str, period: str) -> pd.DataFrame:
-    """
-    For intraday, Yahoo can reject long windows (ARM/new IPOs).
-    Try a fallback chain from bigger -> smaller.
-    """
     interval_norm = interval.strip()
 
+    # Non-intraday: one attempt
     if interval_norm not in _INTRADAY_INTERVALS:
         return _download_once(ticker, interval_norm, period)
 
+    # Intraday: NEVER try 730d; it breaks for many tickers
     fallback_periods: List[str] = []
-    if period:
-        fallback_periods.append(period)
 
-    for p in ["730d", "365d", "180d", "60d", "30d", "7d"]:
+    # Respect caller if already safe; otherwise override to 60d
+    safe_period = (period or "").strip().lower()
+    if safe_period in ("7d", "30d", "60d", "90d"):
+        fallback_periods.append(period)
+    else:
+        fallback_periods.append("60d")
+
+    for p in ["60d", "30d", "7d"]:
         if p not in fallback_periods:
             fallback_periods.append(p)
 
@@ -146,27 +136,12 @@ def _download_with_fallback(ticker: str, interval: str, period: str) -> pd.DataF
     return pd.DataFrame()
 
 
-# -----------------------------
-# Public API
-# -----------------------------
 def load_ohlc(
     ticker: str,
     interval: str = "1d",
     period: str = "max",
     max_age_seconds: Optional[int] = None,
 ) -> pd.DataFrame:
-    """
-    Loads OHLCV from Yahoo via yfinance, with disk caching.
-
-    Returns columns:
-      timestamp, open, high, low, close, volume
-
-    Behavior:
-      - Serves fresh cache if available
-      - Otherwise downloads from Yahoo
-      - Intraday intervals fall back to shorter periods if Yahoo rejects the range
-      - If Yahoo fails, returns stale cache if available
-    """
     _ensure_cache_dir()
 
     interval = interval.strip()
@@ -175,24 +150,24 @@ def load_ohlc(
 
     path = _cache_path(ticker, interval)
 
-    # 1) Serve cache if fresh
+    # 1) fresh cache
     if _is_cache_fresh(path, max_age_seconds):
         cached = _read_cache(path)
         if not cached.empty:
             return cached
 
-    # 2) Fetch from Yahoo with fallback (intraday-safe)
+    # 2) Yahoo fetch
     data = _download_with_fallback(ticker=ticker, interval=interval, period=period)
 
     if data is None or data.empty:
-        # 3) If Yahoo fails, return stale cache if available
+        # 3) fallback to stale cache
         if os.path.exists(path):
             cached = _read_cache(path)
             if not cached.empty:
                 return cached
         return pd.DataFrame()
 
-    # 4) Write cache
+    # 4) write cache
     try:
         data.to_csv(path, index=False)
     except Exception:
