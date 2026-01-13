@@ -30,8 +30,26 @@ CACHE_STOCKS = os.path.join(CACHE_DIR, "stocks_biggest.csv")
 CACHE_ETFS = os.path.join(CACHE_DIR, "etfs_all.csv")
 CACHE_STATE = os.path.join(CACHE_DIR, "state.json")
 
-# NEW: core ETF holdings cache for membership
+# ETF membership cache
 CACHE_CORE_HOLDINGS = os.path.join(CACHE_DIR, "core_etf_holdings.csv")
+
+# ✅ NEW: GICS 11 sector map cache (from SPDR sector ETF holdings)
+CACHE_SECTOR_MAP = os.path.join(CACHE_DIR, "sector_map.csv")
+
+# SPDR sector ETFs -> your 11 sectors
+SECTOR_ETF_MAP = {
+    "XLC": "Communication Services",
+    "XLY": "Consumer Discretionary",
+    "XLP": "Consumer Staples",
+    "XLE": "Energy",
+    "XLF": "Financials",
+    "XLV": "Health Care",
+    "XLI": "Industrials",
+    "XLK": "Information Technology",
+    "XLB": "Materials",
+    "XLRE": "Real Estate",
+    "XLU": "Utilities",
+}
 
 
 def _ensure_dirs() -> None:
@@ -41,18 +59,10 @@ def _ensure_dirs() -> None:
 def _is_fresh(path: str, ttl_sec: int) -> bool:
     if not os.path.exists(path):
         return False
-    age = time.time() - os.path.getmtime(path)
-    return age <= ttl_sec
+    return (time.time() - os.path.getmtime(path)) <= ttl_sec
 
 
 def _normalize_symbol(sym: str) -> str:
-    """
-    Normalize symbols for Yahoo Finance:
-      - remove leading '$'
-      - uppercase + strip whitespace
-      - BRK.B -> BRK-B
-      - keep only A-Z 0-9 and '-'
-    """
     s = str(sym).strip().upper()
     if s.startswith("$"):
         s = s[1:]
@@ -167,25 +177,16 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
     return out
 
 
-def _safe_read_csv(path: str) -> pd.DataFrame:
-    try:
-        return pd.read_csv(path)
-    except Exception:
-        return pd.DataFrame()
-
-
-def _fetch_core_etf_holdings(etf: str) -> List[str]:
+def _fetch_holdings_symbols(etf: str) -> List[str]:
     """
-    Fetch holdings from StockAnalysis holdings page:
+    Fetch holdings list from StockAnalysis:
       https://stockanalysis.com/etf/{etf}/holdings/
     """
-    etf_l = etf.lower()
-    url = f"https://stockanalysis.com/etf/{etf_l}/holdings/"
+    url = f"https://stockanalysis.com/etf/{etf.lower()}/holdings/"
     try:
         tables = pd.read_html(url)
         if not tables:
             return []
-        # holdings table usually first or second; pick the one with 'Symbol'
         best = None
         for t in tables:
             cols = [str(c).strip() for c in t.columns]
@@ -204,36 +205,49 @@ def _fetch_core_etf_holdings(etf: str) -> List[str]:
 
 def ensure_core_holdings_cache(force_refresh: bool = False) -> None:
     """
-    Create/update cache/universe/core_etf_holdings.csv daily.
-    Columns: ticker, etfs (pipe-delimited), etf_count
+    cache/universe/core_etf_holdings.csv
+    columns: ticker, etfs (pipe-delimited), etf_count
     """
     _ensure_dirs()
-
     if not force_refresh and _is_fresh(CACHE_CORE_HOLDINGS, UNIVERSE_CACHE_TTL_SEC):
         return
 
     membership: Dict[str, List[str]] = {}
-
     for etf in CORE_ETFS:
         etf_n = _normalize_symbol(etf)
         if not etf_n:
             continue
-        holdings = _fetch_core_etf_holdings(etf_n)
+        holdings = _fetch_holdings_symbols(etf_n)
         for sym in holdings:
             membership.setdefault(sym, []).append(etf_n)
 
     rows = []
     for sym, etfs in membership.items():
         etfs = sorted(set(etfs))
-        rows.append(
-            {"ticker": sym, "etfs": "|".join(etfs), "etf_count": len(etfs)}
-        )
+        rows.append({"ticker": sym, "etfs": "|".join(etfs), "etf_count": len(etfs)})
 
-    out = pd.DataFrame(rows)
-    try:
-        out.to_csv(CACHE_CORE_HOLDINGS, index=False)
-    except Exception:
-        pass
+    pd.DataFrame(rows).to_csv(CACHE_CORE_HOLDINGS, index=False)
+
+
+def ensure_sector_map_cache(force_refresh: bool = False) -> None:
+    """
+    cache/universe/sector_map.csv
+    columns: ticker, sector (one of your 11)
+    Built from SPDR sector ETF holdings (XLC, XLK, etc.).
+    """
+    _ensure_dirs()
+    if not force_refresh and _is_fresh(CACHE_SECTOR_MAP, UNIVERSE_CACHE_TTL_SEC):
+        return
+
+    rows = []
+    for etf, sector in SECTOR_ETF_MAP.items():
+        holdings = _fetch_holdings_symbols(etf)
+        for sym in holdings:
+            rows.append({"ticker": sym, "sector": sector})
+
+    # If a ticker shows up in multiple (rare), keep first
+    out = pd.DataFrame(rows).drop_duplicates(subset=["ticker"], keep="first")
+    out.to_csv(CACHE_SECTOR_MAP, index=False)
 
 
 def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
@@ -242,9 +256,11 @@ def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
       - Always include CORE_ETFS every run
       - Priority: top PRIORITY_TOP_STOCKS stocks by market cap, filtered by >= min_market_cap
       - Rotation: remaining eligible stocks + all ETFs, rotating each run
+
+    Also ensures sector_map + core_etf_holdings caches exist for Streamlit.
     """
-    # NEW: build ETF membership cache (used by Streamlit filters/heatmap)
     ensure_core_holdings_cache(force_refresh=False)
+    ensure_sector_map_cache(force_refresh=False)
 
     stocks_df = _load_stocks_biggest()
     etfs_df = _load_etfs_all()
