@@ -6,7 +6,7 @@ import json
 import os
 import re
 import time
-from typing import List
+from typing import List, Dict
 
 import pandas as pd
 
@@ -30,6 +30,9 @@ CACHE_STOCKS = os.path.join(CACHE_DIR, "stocks_biggest.csv")
 CACHE_ETFS = os.path.join(CACHE_DIR, "etfs_all.csv")
 CACHE_STATE = os.path.join(CACHE_DIR, "state.json")
 
+# NEW: core ETF holdings cache for membership
+CACHE_CORE_HOLDINGS = os.path.join(CACHE_DIR, "core_etf_holdings.csv")
+
 
 def _ensure_dirs() -> None:
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -45,10 +48,10 @@ def _is_fresh(path: str, ttl_sec: int) -> bool:
 def _normalize_symbol(sym: str) -> str:
     """
     Normalize symbols for Yahoo Finance:
-      - remove leading '$' (example: $ARM -> ARM)
+      - remove leading '$'
       - uppercase + strip whitespace
       - BRK.B -> BRK-B
-      - keep only A-Z 0-9 and '-' (removes weird characters)
+      - keep only A-Z 0-9 and '-'
     """
     s = str(sym).strip().upper()
     if s.startswith("$"):
@@ -59,9 +62,6 @@ def _normalize_symbol(sym: str) -> str:
 
 
 def _parse_market_cap_to_int(value) -> int | None:
-    """
-    Converts market cap strings like '4.55T', '911.31B', '245.78M' into integer dollars.
-    """
     if value is None:
         return None
     s = str(value).strip()
@@ -111,8 +111,8 @@ def _load_stocks_biggest(force_refresh: bool = False) -> pd.DataFrame:
 
     df["market_cap_int"] = df["Market Cap"].apply(_parse_market_cap_to_int)
     df = df.dropna(subset=["Symbol", "market_cap_int"]).copy()
-
     df["Symbol"] = df["Symbol"].astype(str).str.strip()
+
     df.to_csv(CACHE_STOCKS, index=False)
     return df
 
@@ -167,50 +167,115 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
     return out
 
 
+def _safe_read_csv(path: str) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_core_etf_holdings(etf: str) -> List[str]:
+    """
+    Fetch holdings from StockAnalysis holdings page:
+      https://stockanalysis.com/etf/{etf}/holdings/
+    """
+    etf_l = etf.lower()
+    url = f"https://stockanalysis.com/etf/{etf_l}/holdings/"
+    try:
+        tables = pd.read_html(url)
+        if not tables:
+            return []
+        # holdings table usually first or second; pick the one with 'Symbol'
+        best = None
+        for t in tables:
+            cols = [str(c).strip() for c in t.columns]
+            if "Symbol" in cols:
+                best = t
+                break
+        if best is None:
+            return []
+        best.columns = [str(c).strip() for c in best.columns]
+        syms = best["Symbol"].astype(str).tolist()
+        syms = [_normalize_symbol(s) for s in syms]
+        return [s for s in syms if s]
+    except Exception:
+        return []
+
+
+def ensure_core_holdings_cache(force_refresh: bool = False) -> None:
+    """
+    Create/update cache/universe/core_etf_holdings.csv daily.
+    Columns: ticker, etfs (pipe-delimited), etf_count
+    """
+    _ensure_dirs()
+
+    if not force_refresh and _is_fresh(CACHE_CORE_HOLDINGS, UNIVERSE_CACHE_TTL_SEC):
+        return
+
+    membership: Dict[str, List[str]] = {}
+
+    for etf in CORE_ETFS:
+        etf_n = _normalize_symbol(etf)
+        if not etf_n:
+            continue
+        holdings = _fetch_core_etf_holdings(etf_n)
+        for sym in holdings:
+            membership.setdefault(sym, []).append(etf_n)
+
+    rows = []
+    for sym, etfs in membership.items():
+        etfs = sorted(set(etfs))
+        rows.append(
+            {"ticker": sym, "etfs": "|".join(etfs), "etf_count": len(etfs)}
+        )
+
+    out = pd.DataFrame(rows)
+    try:
+        out.to_csv(CACHE_CORE_HOLDINGS, index=False)
+    except Exception:
+        pass
+
+
 def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
     """
     Returns tickers to scan:
-      - Always include CORE_ETFS (fixed list) every run
+      - Always include CORE_ETFS every run
       - Priority: top PRIORITY_TOP_STOCKS stocks by market cap, filtered by >= min_market_cap
-      - Rotation: remaining eligible stocks + ETF table, rotating each run (stateful)
+      - Rotation: remaining eligible stocks + all ETFs, rotating each run
     """
+    # NEW: build ETF membership cache (used by Streamlit filters/heatmap)
+    ensure_core_holdings_cache(force_refresh=False)
+
     stocks_df = _load_stocks_biggest()
     etfs_df = _load_etfs_all()
 
-    # Filter stocks by cap threshold
     stocks_df = stocks_df[stocks_df["market_cap_int"] >= int(min_market_cap)].copy()
 
-    # Priority stocks: top by market cap
     priority_raw = stocks_df["Symbol"].head(PRIORITY_TOP_STOCKS).tolist()
     priority = [_normalize_symbol(x) for x in priority_raw]
     priority = [x for x in priority if x]
 
-    # Remaining stocks for rotation
     remaining_raw = stocks_df["Symbol"].iloc[PRIORITY_TOP_STOCKS:].tolist()
     remaining = [_normalize_symbol(x) for x in remaining_raw]
     remaining = [x for x in remaining if x]
 
-    # ETFs from table (rotation pool only — but CORE_ETFS are always included)
     etfs_raw = etfs_df["Symbol"].tolist()
     etfs = [_normalize_symbol(x) for x in etfs_raw]
     etfs = [x for x in etfs if x]
 
-    # Normalize CORE_ETFS as well
     core_etfs = [_normalize_symbol(x) for x in CORE_ETFS]
     core_etfs = [x for x in core_etfs if x]
 
     expansion_pool = _dedupe_keep_order(remaining + etfs)
 
-    # Priority batch
     take_priority = min(PRIORITY_PER_RUN, len(priority))
     priority_batch = priority[:take_priority]
 
-    # Rotation batch (stateful)
     state = _read_state()
     offset = int(state.get("offset", 0)) if expansion_pool else 0
 
     take_rotation = min(ROTATION_PER_RUN, len(expansion_pool))
-    if take_rotation > 0:
+    if take_rotation > 0 and expansion_pool:
         start = offset % len(expansion_pool)
         end = start + take_rotation
         if end <= len(expansion_pool):
@@ -224,7 +289,6 @@ def load_universe(min_market_cap: int = MIN_MARKET_CAP) -> List[str]:
     state["offset"] = offset
     _write_state(state)
 
-    # ✅ FINAL: Always include core ETFs first, then priority stocks, then rotation
     universe = _dedupe_keep_order(core_etfs + priority_batch + rotation_batch)
 
     if DEV_MODE:
