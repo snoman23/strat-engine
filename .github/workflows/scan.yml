@@ -54,10 +54,18 @@ jobs:
           test -f cache/meta/last_run.json || echo '{}' > cache/meta/last_run.json
           test -f cache/universe/state.json || echo '{}' > cache/universe/state.json
 
-          # Add outputs (only things we intend to version)
+          # Add outputs for Streamlit
           git add cache/results/latest.csv cache/results/latest.json || true
+
+          # Scheduler state (prevents re-running same closed candle)
           git add cache/meta/last_run.json || true
+
+          # Universe rotation state (prevents scanning same slice forever)
           git add cache/universe/state.json || true
+
+          # ✅ NEW: Universe caches (needed for Sector + ETF membership in Streamlit)
+          git add cache/universe/stocks_biggest.csv || true
+          git add cache/universe/core_etf_holdings.csv || true
 
           # If nothing changed, exit cleanly
           git diff --cached --quiet && echo "No changes to commit" && exit 0
@@ -69,4 +77,3 @@ jobs:
           git rebase origin/main || (git rebase --abort && git reset --hard origin/main)
 
           git push origin HEAD:main
-
