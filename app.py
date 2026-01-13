@@ -38,11 +38,7 @@ def load_holdings() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def normalize_to_11_sector(raw: str) -> str:
-    """
-    Convert whatever StockAnalysis gives into your exact 11 sector names.
-    If unknown, return "Unknown".
-    """
+def normalize_to_11_sector(raw) -> str:
     if raw is None:
         return "Unknown"
     s = str(raw).strip()
@@ -75,9 +71,10 @@ def normalize_to_11_sector(raw: str) -> str:
     return "Unknown"
 
 
-def enrich_sector_from_stockanalysis(df: pd.DataFrame) -> pd.DataFrame:
+def enrich_sector(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Assign ONE sector (from your 11) using StockAnalysis cached table.
+    Enrich sector from StockAnalysis cache (stocks_biggest.csv).
+    Always returns exactly one of your 11 sectors or Unknown.
     """
     df = df.copy()
     df["ticker"] = df["ticker"].astype(str).fillna("").str.upper()
@@ -102,17 +99,15 @@ def enrich_sector_from_stockanalysis(df: pd.DataFrame) -> pd.DataFrame:
     s = s[["Symbol", sector_col]].rename(columns={"Symbol": "ticker", sector_col: "sector_raw"})
     s["sector_raw"] = s["sector_raw"].astype(str).fillna("")
 
-    merged = df.merge(s, on="ticker", how="left")
-    merged["sector"] = merged["sector_raw"].apply(normalize_to_11_sector)
-    merged = merged.drop(columns=["sector_raw"], errors="ignore")
-
-    return merged
+    out = df.merge(s, on="ticker", how="left")
+    out["sector"] = out["sector_raw"].apply(normalize_to_11_sector)
+    out = out.drop(columns=["sector_raw"], errors="ignore")
+    return out
 
 
 def enrich_etf_membership(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add ETF membership for STOCKS using cache/universe/core_etf_holdings.csv
-    Columns expected: ticker, etfs (pipe-delimited), etf_count
+    Adds ETF membership from cache/universe/core_etf_holdings.csv
     """
     df = df.copy()
     df["ticker"] = df["ticker"].astype(str).fillna("").str.upper()
@@ -127,10 +122,10 @@ def enrich_etf_membership(df: pd.DataFrame) -> pd.DataFrame:
     h["ticker"] = h["ticker"].astype(str).fillna("").str.upper()
     h["etfs"] = h.get("etfs", "").astype(str).fillna("")
 
-    merged = df.merge(h[["ticker", "etfs"]], on="ticker", how="left")
-    merged["etfs"] = merged["etfs"].fillna("")
-    merged["etfs_pretty"] = merged["etfs"].apply(lambda x: ", ".join([e for e in str(x).split("|") if e]))
-    return merged
+    out = df.merge(h[["ticker", "etfs"]], on="ticker", how="left")
+    out["etfs"] = out["etfs"].fillna("")
+    out["etfs_pretty"] = out["etfs"].apply(lambda x: ", ".join([e for e in str(x).split("|") if e]))
+    return out
 
 
 def make_ticker_link(ticker: str) -> str:
@@ -141,51 +136,12 @@ def make_ticker_link(ticker: str) -> str:
     return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{t}</a>'
 
 
-def build_sector_heatmap(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Heatmap: % bullish setups by Sector x TF.
-    Only Daily or higher: D/W/M/Q/Y.
-    """
-    use_tfs = ["D", "W", "M", "Q", "Y"]
-    d = df.copy()
-    d["dir"] = d["dir"].astype(str).str.lower()
-    d = d[d["dir"].isin(["bull", "bear"])]
-    d = d[d["tf"].isin(use_tfs)]
-
-    if d.empty:
-        return pd.DataFrame()
-
-    grp = d.groupby(["sector", "tf", "dir"]).size().reset_index(name="n")
-    pivot = grp.pivot_table(index=["sector", "tf"], columns="dir", values="n", fill_value=0).reset_index()
-
-    if "bull" not in pivot.columns:
-        pivot["bull"] = 0
-    if "bear" not in pivot.columns:
-        pivot["bear"] = 0
-
-    pivot["total"] = pivot["bull"] + pivot["bear"]
-    pivot["bull_pct"] = pivot.apply(lambda r: (r["bull"] / r["total"]) if r["total"] else 0.0, axis=1)
-
-    mat = pivot.pivot_table(index="sector", columns="tf", values="bull_pct", fill_value=0.0)
-
-    # enforce 11-sector order
-    mat = mat.reindex(SECTORS_11)
-
-    cols = [c for c in ["Y", "Q", "M", "W", "D"] if c in mat.columns]
-    mat = mat[cols]
-
-    # show as % integers
-    mat = (mat * 100.0).round(0).astype(int)
-    return mat
-
-
 def heat_color(val: int) -> str:
     """
-    Correct thresholds:
-      Dark green >= 75% bullish
-      Light green 50–74%
-      Light red 26–49%
-      Dark red <= 25%
+    Dark green >= 75
+    Light green 50-74
+    Light red 26-49
+    Dark red <= 25
     """
     try:
         v = int(val)
@@ -202,25 +158,73 @@ def heat_color(val: int) -> str:
     return ""
 
 
+def build_sector_heatmap(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Heatmap shows % bullish setups per Sector x TF.
+    Only TFs: D/W/M/Q/Y.
+    Returns integer % matrix with no NaNs.
+    """
+    use_tfs = ["D", "W", "M", "Q", "Y"]
+
+    d = df.copy()
+    d["dir"] = d["dir"].astype(str).str.lower()
+    d = d[d["dir"].isin(["bull", "bear"])]
+    d = d[d["tf"].isin(use_tfs)]
+    d["sector"] = d["sector"].astype(str).fillna("Unknown")
+
+    if d.empty:
+        return pd.DataFrame()
+
+    grp = d.groupby(["sector", "tf", "dir"]).size().reset_index(name="n")
+    piv = grp.pivot_table(index=["sector", "tf"], columns="dir", values="n", fill_value=0).reset_index()
+
+    if "bull" not in piv.columns:
+        piv["bull"] = 0
+    if "bear" not in piv.columns:
+        piv["bear"] = 0
+
+    piv["total"] = piv["bull"] + piv["bear"]
+    # bull_pct safe
+    piv["bull_pct"] = piv.apply(lambda r: (r["bull"] / r["total"]) if r["total"] else 0.0, axis=1)
+
+    mat = piv.pivot_table(index="sector", columns="tf", values="bull_pct", fill_value=0.0)
+
+    # enforce 11-sector order (+ Unknown at end if present)
+    idx = SECTORS_11.copy()
+    if "Unknown" in mat.index and "Unknown" not in idx:
+        idx.append("Unknown")
+    mat = mat.reindex(idx)
+
+    cols = [c for c in ["Y", "Q", "M", "W", "D"] if c in mat.columns]
+    mat = mat[cols]
+
+    # ✅ critical fix: remove NaN/inf before casting
+    mat = mat.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+
+    mat = (mat * 100.0).round(0).astype(int)
+    return mat
+
+
 # -----------------------------
-# Load + normalize results
+# Load results
 # -----------------------------
 df = load_results()
 if df.empty:
     st.error("No scan results found yet. The workflow hasn't written cache/results/latest.csv yet.")
     st.stop()
 
-# Ensure expected columns exist
+# Ensure columns exist (so UI never breaks)
 for col in [
-    "scan_time", "ticker", "current_price",
-    "tf", "pattern", "setup", "dir",
-    "entry", "stop", "score", "aligned",
-    "last_strat", "last_candle_type",
+    "scan_time","ticker","current_price",
+    "tf","pattern","setup","dir",
+    "entry","stop","score","aligned",
+    "last_strat","last_candle_type",
     "actionable"
 ]:
     if col not in df.columns:
         df[col] = None
 
+# Normalize
 df["scan_time"] = df["scan_time"].astype(str).fillna("")
 df["ticker"] = df["ticker"].astype(str).fillna("")
 df["tf"] = df["tf"].astype(str).fillna("")
@@ -230,14 +234,14 @@ df["setup"] = df["setup"].astype(str).fillna("")
 df["actionable"] = df["actionable"].astype(str).fillna("")
 df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
 
-for c in ["current_price", "entry", "stop"]:
+for c in ["current_price","entry","stop"]:
     df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
 
 last_scan = df["scan_time"].iloc[0] if len(df) else "Unknown"
 st.markdown(f"**Last scan_time (ET):** `{last_scan}`")
 
-# Enrich with single-sector + ETF membership
-df = enrich_sector_from_stockanalysis(df)
+# Enrich metadata
+df = enrich_sector(df)
 df = enrich_etf_membership(df)
 
 # -----------------------------
@@ -258,11 +262,10 @@ with tab_scan:
 
     setup_search = st.sidebar.text_input("Setup contains", value="").strip()
 
-    # Sector filter (strict 11 sectors + Unknown)
     sector_options = SECTORS_11 + (["Unknown"] if "Unknown" in df["sector"].unique() else [])
     sector_selected = st.sidebar.multiselect("Sector", options=sector_options, default=sector_options)
 
-    # ETF membership filter (for stocks)
+    # ETF membership filter
     all_etfs = set()
     for x in df["etfs"].fillna("").astype(str).tolist():
         for e in x.split("|"):
@@ -285,36 +288,46 @@ with tab_scan:
     if sector_selected:
         f = f[f["sector"].isin(sector_selected)]
     if etf_selected:
-        def _has_any_etf(etfs_str: str) -> bool:
+        def _has_any(etfs_str: str) -> bool:
             if not etfs_str or str(etfs_str).lower() == "nan":
                 return False
             s = set([e for e in str(etfs_str).split("|") if e])
             return any(e in s for e in etf_selected)
-        f = f[f["etfs"].apply(_has_any_etf)]
+        f = f[f["etfs"].apply(_has_any)]
     if only_aligned and "aligned" in f.columns:
         f = f[f["aligned"] == True]
 
-    # sort strongest bias first
+    # Sort
     f["_abs_score"] = f["score"].abs()
     f = f.sort_values(by=["_abs_score", "ticker", "tf"], ascending=[False, True, True]).drop(columns=["_abs_score"])
 
     st.subheader("Latest Scan Results")
 
-    # Ticker clickable (no separate chart column)
+    # Build output table with ticker clickable
     out = f.copy()
     out["Ticker"] = out["ticker"].apply(make_ticker_link)
 
-    # Keep ETF membership visible for stocks
-    display_cols = [
-        "Ticker", "current_price", "sector", "etfs_pretty",
-        "tf", "pattern", "setup", "dir",
-        "last_strat", "last_candle_type",
-        "entry", "stop",
-        "score", "aligned",
+    # Select columns (robust to missing)
+    cols = [
+        "Ticker",
+        "current_price",
+        "sector",
+        "etfs_pretty",
+        "tf",
+        "pattern",
+        "setup",
+        "dir",
+        "last_strat",
+        "last_candle_type",
+        "entry",
+        "stop",
+        "score",
+        "aligned",
         "actionable",
     ]
+    cols = [c for c in cols if c in out.columns]
 
-    out = out.rename(columns={
+    out = out[cols].rename(columns={
         "current_price": "Price",
         "sector": "Sector",
         "etfs_pretty": "ETF(s)",
@@ -331,35 +344,34 @@ with tab_scan:
         "actionable": "Plan",
     })
 
-    out = out[[c for c in display_cols if c in out.columns]].rename(columns={
-        "current_price": "Price",
-        "etfs_pretty": "ETF(s)",
-    })
-
-    # Render as HTML so the ticker links work
+    # Render HTML so ticker links work
     st.markdown(out.to_html(escape=False, index=False), unsafe_allow_html=True)
 
 with tab_sectors:
     st.subheader("Industry Sectors (Daily and Higher)")
-
     st.markdown(
         """
-Heatmap shows **% bullish setups** within each **Sector × Timeframe** (D/W/M/Q/Y only).
-- **Dark green** ≥ 75% bullish
-- **Light green** 50–74% bullish
-- **Light red** 26–49% bullish
-- **Dark red** ≤ 25% bullish
+Heatmap shows **% bullish setups** within each **Sector × Timeframe** (**D/W/M/Q/Y only**).
+- **Dark green** ≥ 75% bullish  
+- **Light green** 50–74% bullish  
+- **Light red** 26–49% bullish  
+- **Dark red** ≤ 25% bullish  
         """
     )
 
-    hm = build_sector_heatmap(df)
+    try:
+        hm = build_sector_heatmap(df)
+    except Exception as e:
+        st.error(f"Heatmap error: {e}")
+        hm = pd.DataFrame()
+
     if hm.empty:
-        st.info("Not enough data to build the heatmap yet.")
+        st.info("Not enough data to build the heatmap yet (or no D/W/M/Q/Y rows).")
     else:
         # Add 2–3 top ETFs next to sector name
         hm2 = hm.copy()
         hm2.index = [
-            f"{s}  (ETFs: {', '.join(SECTOR_TOP_ETFS.get(s, [])[:3])})"
+            f"{s} (ETFs: {', '.join(SECTOR_TOP_ETFS.get(s, [])[:3])})" if s in SECTOR_TOP_ETFS else s
             for s in hm2.index
         ]
         styled = hm2.style.applymap(heat_color)
