@@ -86,7 +86,6 @@ def make_ticker_link(ticker: str) -> str:
 
 def build_sector_heatmap(df: pd.DataFrame) -> pd.DataFrame:
     use_tfs = ["D", "W", "M", "Q", "Y"]
-
     d = df.copy()
     d["dir"] = d["dir"].astype(str).str.lower()
     d = d[d["dir"].isin(["bull", "bear"])]
@@ -150,71 +149,88 @@ df["scan_time"] = df["scan_time"].astype(str).fillna("")
 df["ticker"] = df["ticker"].astype(str).fillna("")
 df["tf"] = df["tf"].astype(str).fillna("")
 df["dir"] = df["dir"].astype(str).fillna("")
+df["pattern"] = df["pattern"].astype(str).fillna("")
+df["setup"] = df["setup"].astype(str).fillna("")
+df["actionable"] = df["actionable"].astype(str).fillna("")
 df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
+
 for c in ["current_price","entry","stop"]:
     df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
 
 last_scan = df["scan_time"].iloc[0] if len(df) else "Unknown"
 st.markdown(f"**Last scan_time (ET):** `{last_scan}`")
 
+# Enrich (fast)
 df = enrich_sector(df)
 df = enrich_etf_membership(df)
 
+# -----------------------------
+# Sidebar controls (render cap prevents spinner-of-death)
+# -----------------------------
+st.sidebar.header("Filters")
+max_rows_render = st.sidebar.slider("Max rows to render (keeps app fast)", 100, 5000, 500, 100)
+
+ticker_search = st.sidebar.text_input("Ticker contains", value="").strip().upper()
+
+tf_options = sorted([x for x in df["tf"].dropna().unique().tolist() if x])
+tf_selected = st.sidebar.multiselect("Timeframe", options=tf_options, default=tf_options)
+
+dir_options = [x for x in ["bull", "bear"] if x in df["dir"].dropna().unique().tolist()]
+dir_selected = st.sidebar.multiselect("Direction", options=dir_options, default=dir_options)
+
+setup_search = st.sidebar.text_input("Setup contains", value="").strip()
+
+sector_options = SECTORS_11 + (["Unknown"] if "Unknown" in df["sector"].unique() else [])
+sector_selected = st.sidebar.multiselect("Sector", options=sector_options, default=sector_options)
+
+all_etfs = set()
+for x in df["etfs"].fillna("").astype(str).tolist():
+    for e in x.split("|"):
+        if e:
+            all_etfs.add(e)
+etf_options = sorted(all_etfs)
+etf_selected = st.sidebar.multiselect("ETF membership contains", options=etf_options, default=[])
+
+only_aligned = st.sidebar.checkbox("Only aligned with bias", value=False)
+
+# Apply filters
+f = df.copy()
+if ticker_search:
+    f = f[f["ticker"].str.upper().str.contains(ticker_search, na=False)]
+if tf_selected:
+    f = f[f["tf"].isin(tf_selected)]
+if dir_selected:
+    f = f[f["dir"].isin(dir_selected)]
+if setup_search:
+    f = f[f["setup"].astype(str).str.contains(setup_search, case=False, na=False)]
+if sector_selected:
+    f = f[f["sector"].isin(sector_selected)]
+if etf_selected:
+    def _has_any(etfs_str: str) -> bool:
+        if not etfs_str or str(etfs_str).lower() == "nan":
+            return False
+        s = set([e for e in str(etfs_str).split("|") if e])
+        return any(e in s for e in etf_selected)
+    f = f[f["etfs"].apply(_has_any)]
+if only_aligned and "aligned" in f.columns:
+    f = f[f["aligned"] == True]
+
+# Sort (stable)
+f["_abs_score"] = f["score"].abs()
+f = f.sort_values(by=["_abs_score","ticker","tf"], ascending=[False, True, True]).drop(columns=["_abs_score"])
+
+# Tabs
 tab_scan, tab_sectors = st.tabs(["Scanner", "Industry Sectors"])
 
 with tab_scan:
-    st.sidebar.header("Filters")
-
-    ticker_search = st.sidebar.text_input("Ticker contains", value="").strip().upper()
-
-    tf_options = sorted([x for x in df["tf"].dropna().unique().tolist() if x])
-    tf_selected = st.sidebar.multiselect("Timeframe", options=tf_options, default=tf_options)
-
-    dir_options = [x for x in ["bull", "bear"] if x in df["dir"].dropna().unique().tolist()]
-    dir_selected = st.sidebar.multiselect("Direction", options=dir_options, default=dir_options)
-
-    setup_search = st.sidebar.text_input("Setup contains", value="").strip()
-
-    sector_options = SECTORS_11 + (["Unknown"] if "Unknown" in df["sector"].unique() else [])
-    sector_selected = st.sidebar.multiselect("Sector", options=sector_options, default=sector_options)
-
-    all_etfs = set()
-    for x in df["etfs"].fillna("").astype(str).tolist():
-        for e in x.split("|"):
-            if e:
-                all_etfs.add(e)
-    etf_options = sorted(all_etfs)
-    etf_selected = st.sidebar.multiselect("ETF membership contains", options=etf_options, default=[])
-
-    only_aligned = st.sidebar.checkbox("Only aligned with bias", value=False)
-
-    f = df.copy()
-    if ticker_search:
-        f = f[f["ticker"].str.upper().str.contains(ticker_search, na=False)]
-    if tf_selected:
-        f = f[f["tf"].isin(tf_selected)]
-    if dir_selected:
-        f = f[f["dir"].isin(dir_selected)]
-    if setup_search:
-        f = f[f["setup"].astype(str).str.contains(setup_search, case=False, na=False)]
-    if sector_selected:
-        f = f[f["sector"].isin(sector_selected)]
-    if etf_selected:
-        def _has_any(etfs_str: str) -> bool:
-            if not etfs_str or str(etfs_str).lower() == "nan":
-                return False
-            s = set([e for e in str(etfs_str).split("|") if e])
-            return any(e in s for e in etf_selected)
-        f = f[f["etfs"].apply(_has_any)]
-    if only_aligned and "aligned" in f.columns:
-        f = f[f["aligned"] == True]
-
-    f["_abs_score"] = f["score"].abs()
-    f = f.sort_values(by=["_abs_score","ticker","tf"], ascending=[False, True, True]).drop(columns=["_abs_score"])
-
     st.subheader("Latest Scan Results")
 
-    out = f.copy()
+    # Download full filtered data (so we can render small but still give full access)
+    csv_bytes = f.to_csv(index=False).encode("utf-8")
+    st.download_button("Download filtered results (CSV)", data=csv_bytes, file_name="filtered_results.csv", mime="text/csv")
+
+    # Render only first N rows as HTML (keeps app responsive)
+    out = f.head(max_rows_render).copy()
     out["Ticker"] = out["ticker"].apply(make_ticker_link)
 
     cols = [
@@ -243,6 +259,7 @@ with tab_scan:
         "actionable": "Plan",
     })
 
+    st.caption(f"Showing first {min(len(f), max_rows_render)} of {len(f)} filtered rows (to keep the app fast).")
     st.markdown(out.to_html(escape=False, index=False), unsafe_allow_html=True)
 
 with tab_sectors:
