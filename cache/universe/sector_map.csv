@@ -1,0 +1,272 @@
+ticker,sector
+META,Communication Services
+GOOGL,Communication Services
+GOOG,Communication Services
+NFLX,Communication Services
+DIS,Communication Services
+CMCSA,Communication Services
+TMUS,Communication Services
+TTWO,Communication Services
+VZ,Communication Services
+EA,Communication Services
+T,Communication Services
+WBD,Communication Services
+OMC,Communication Services
+LYV,Communication Services
+CHTR,Communication Services
+TTD,Communication Services
+FOXA,Communication Services
+TKO,Communication Services
+NWSA,Communication Services
+FOX,Communication Services
+MTCH,Communication Services
+PSKY,Communication Services
+NWS,Communication Services
+NAN,Communication Services
+AMZN,Consumer Discretionary
+TSLA,Consumer Discretionary
+HD,Consumer Discretionary
+MCD,Consumer Discretionary
+TJX,Consumer Discretionary
+BKNG,Consumer Discretionary
+LOW,Consumer Discretionary
+SBUX,Consumer Discretionary
+DASH,Consumer Discretionary
+GM,Consumer Discretionary
+NKE,Consumer Discretionary
+ORLY,Consumer Discretionary
+RCL,Consumer Discretionary
+MAR,Consumer Discretionary
+HLT,Consumer Discretionary
+CVNA,Consumer Discretionary
+ROST,Consumer Discretionary
+ABNB,Consumer Discretionary
+F,Consumer Discretionary
+AZO,Consumer Discretionary
+CMG,Consumer Discretionary
+YUM,Consumer Discretionary
+EBAY,Consumer Discretionary
+DHI,Consumer Discretionary
+EXPE,Consumer Discretionary
+WMT,Consumer Staples
+COST,Consumer Staples
+PG,Consumer Staples
+KO,Consumer Staples
+PM,Consumer Staples
+MDLZ,Consumer Staples
+CL,Consumer Staples
+PEP,Consumer Staples
+MO,Consumer Staples
+MNST,Consumer Staples
+TGT,Consumer Staples
+KDP,Consumer Staples
+KR,Consumer Staples
+SYY,Consumer Staples
+KMB,Consumer Staples
+KVUE,Consumer Staples
+DG,Consumer Staples
+ADM,Consumer Staples
+HSY,Consumer Staples
+EL,Consumer Staples
+DLTR,Consumer Staples
+GIS,Consumer Staples
+STZ,Consumer Staples
+CHD,Consumer Staples
+KHC,Consumer Staples
+XOM,Energy
+CVX,Energy
+COP,Energy
+SLB,Energy
+WMB,Energy
+VLO,Energy
+PSX,Energy
+EOG,Energy
+KMI,Energy
+MPC,Energy
+BKR,Energy
+OKE,Energy
+TRGP,Energy
+EQT,Energy
+OXY,Energy
+FANG,Energy
+HAL,Energy
+EXE,Energy
+DVN,Energy
+CTRA,Energy
+TPL,Energy
+APA,Energy
+BRK-B,Financials
+JPM,Financials
+V,Financials
+MA,Financials
+BAC,Financials
+WFC,Financials
+GS,Financials
+MS,Financials
+C,Financials
+AXP,Financials
+SPGI,Financials
+SCHW,Financials
+COF,Financials
+BLK,Financials
+PGR,Financials
+BX,Financials
+CB,Financials
+ICE,Financials
+CME,Financials
+KKR,Financials
+MMC,Financials
+HOOD,Financials
+USB,Financials
+PNC,Financials
+BK,Financials
+LLY,Health Care
+JNJ,Health Care
+ABBV,Health Care
+UNH,Health Care
+MRK,Health Care
+TMO,Health Care
+ABT,Health Care
+ISRG,Health Care
+AMGN,Health Care
+GILD,Health Care
+DHR,Health Care
+BSX,Health Care
+PFE,Health Care
+MDT,Health Care
+SYK,Health Care
+VRTX,Health Care
+BMY,Health Care
+CVS,Health Care
+MCK,Health Care
+ELV,Health Care
+REGN,Health Care
+HCA,Health Care
+CI,Health Care
+COR,Health Care
+BDX,Health Care
+GE,Industrials
+CAT,Industrials
+RTX,Industrials
+BA,Industrials
+UBER,Industrials
+GEV,Industrials
+UNP,Industrials
+HON,Industrials
+ETN,Industrials
+DE,Industrials
+PH,Industrials
+LMT,Industrials
+ADP,Industrials
+GD,Industrials
+MMM,Industrials
+HWM,Industrials
+TT,Industrials
+NOC,Industrials
+WM,Industrials
+EMR,Industrials
+UPS,Industrials
+TDG,Industrials
+CMI,Industrials
+FDX,Industrials
+JCI,Industrials
+NVDA,Information Technology
+AAPL,Information Technology
+MSFT,Information Technology
+AVGO,Information Technology
+PLTR,Information Technology
+MU,Information Technology
+AMD,Information Technology
+ORCL,Information Technology
+CSCO,Information Technology
+IBM,Information Technology
+LRCX,Information Technology
+CRM,Information Technology
+AMAT,Information Technology
+QCOM,Information Technology
+INTC,Information Technology
+INTU,Information Technology
+ACN,Information Technology
+KLAC,Information Technology
+TXN,Information Technology
+APP,Information Technology
+APH,Information Technology
+NOW,Information Technology
+ADI,Information Technology
+ADBE,Information Technology
+PANW,Information Technology
+LIN,Materials
+NEM,Materials
+CRH,Materials
+SHW,Materials
+FCX,Materials
+APD,Materials
+ECL,Materials
+CTVA,Materials
+MLM,Materials
+NUE,Materials
+VMC,Materials
+STLD,Materials
+PPG,Materials
+IP,Materials
+SW,Materials
+AMCR,Materials
+PKG,Materials
+ALB,Materials
+DOW,Materials
+DD,Materials
+IFF,Materials
+BALL,Materials
+AVY,Materials
+CF,Materials
+LYB,Materials
+WELL,Real Estate
+PLD,Real Estate
+AMT,Real Estate
+EQIX,Real Estate
+CBRE,Real Estate
+SPG,Real Estate
+O,Real Estate
+PSA,Real Estate
+DLR,Real Estate
+CCI,Real Estate
+VTR,Real Estate
+VICI,Real Estate
+EXR,Real Estate
+AVB,Real Estate
+CSGP,Real Estate
+IRM,Real Estate
+EQR,Real Estate
+SBAC,Real Estate
+WY,Real Estate
+ESS,Real Estate
+MAA,Real Estate
+INVH,Real Estate
+KIM,Real Estate
+CPT,Real Estate
+DOC,Real Estate
+NEE,Utilities
+CEG,Utilities
+SO,Utilities
+DUK,Utilities
+AEP,Utilities
+SRE,Utilities
+D,Utilities
+VST,Utilities
+EXC,Utilities
+XEL,Utilities
+ETR,Utilities
+PEG,Utilities
+ED,Utilities
+PCG,Utilities
+WEC,Utilities
+NRG,Utilities
+AEE,Utilities
+DTE,Utilities
+ATO,Utilities
+PPL,Utilities
+ES,Utilities
+AWK,Utilities
+CNP,Utilities
+FE,Utilities
+EIX,Utilities
