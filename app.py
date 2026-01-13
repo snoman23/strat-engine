@@ -5,11 +5,10 @@ import streamlit as st
 from config import SECTORS_11, SECTOR_TOP_ETFS
 
 RESULTS_PATH = "cache/results/latest.csv"
-STOCKS_BIGGEST_PATH = "cache/universe/stocks_biggest.csv"
 HOLDINGS_PATH = "cache/universe/core_etf_holdings.csv"
+SECTOR_MAP_PATH = "cache/universe/sector_map.csv"
 
 st.set_page_config(page_title="STRAT Scanner", page_icon="📈", layout="wide")
-
 st.title("STRAT Scanner")
 st.caption("Educational / informational purposes only. Not financial advice. Trading involves risk.")
 
@@ -23,14 +22,6 @@ def load_results() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
-def load_stocks_biggest() -> pd.DataFrame:
-    try:
-        return pd.read_csv(STOCKS_BIGGEST_PATH)
-    except Exception:
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=3600)
 def load_holdings() -> pd.DataFrame:
     try:
         return pd.read_csv(HOLDINGS_PATH)
@@ -38,77 +29,34 @@ def load_holdings() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def normalize_to_11_sector(raw) -> str:
-    if raw is None:
-        return "Unknown"
-    s = str(raw).strip()
-    if not s or s.lower() == "nan":
-        return "Unknown"
-
-    mapping = {
-        "Communication Services": "Communication Services",
-        "Consumer Discretionary": "Consumer Discretionary",
-        "Consumer Staples": "Consumer Staples",
-        "Energy": "Energy",
-        "Financials": "Financials",
-        "Health Care": "Health Care",
-        "Healthcare": "Health Care",
-        "Industrials": "Industrials",
-        "Information Technology": "Information Technology",
-        "Technology": "Information Technology",
-        "Materials": "Materials",
-        "Real Estate": "Real Estate",
-        "Utilities": "Utilities",
-    }
-
-    if s in mapping:
-        return mapping[s]
-
-    for k, v in mapping.items():
-        if k.lower() in s.lower():
-            return v
-
-    return "Unknown"
+@st.cache_data(ttl=3600)
+def load_sector_map() -> pd.DataFrame:
+    try:
+        return pd.read_csv(SECTOR_MAP_PATH)
+    except Exception:
+        return pd.DataFrame()
 
 
 def enrich_sector(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Enrich sector from StockAnalysis cache (stocks_biggest.csv).
-    Always returns exactly one of your 11 sectors or Unknown.
-    """
     df = df.copy()
     df["ticker"] = df["ticker"].astype(str).fillna("").str.upper()
     df["sector"] = "Unknown"
 
-    s = load_stocks_biggest()
-    if s.empty or "Symbol" not in s.columns:
+    sm = load_sector_map()
+    if sm.empty or "ticker" not in sm.columns or "sector" not in sm.columns:
         return df
 
-    s = s.copy()
-    s["Symbol"] = s["Symbol"].astype(str).fillna("").str.upper()
+    sm = sm.copy()
+    sm["ticker"] = sm["ticker"].astype(str).fillna("").str.upper()
+    sm["sector"] = sm["sector"].astype(str).fillna("Unknown")
 
-    sector_col = None
-    for cand in ["Sector", "sector", "Industry", "industry"]:
-        if cand in s.columns:
-            sector_col = cand
-            break
-
-    if not sector_col:
-        return df
-
-    s = s[["Symbol", sector_col]].rename(columns={"Symbol": "ticker", sector_col: "sector_raw"})
-    s["sector_raw"] = s["sector_raw"].astype(str).fillna("")
-
-    out = df.merge(s, on="ticker", how="left")
-    out["sector"] = out["sector_raw"].apply(normalize_to_11_sector)
-    out = out.drop(columns=["sector_raw"], errors="ignore")
+    out = df.merge(sm[["ticker", "sector"]], on="ticker", how="left", suffixes=("", "_m"))
+    out["sector"] = out["sector_m"].fillna(out["sector"]).fillna("Unknown")
+    out = out.drop(columns=["sector_m"], errors="ignore")
     return out
 
 
 def enrich_etf_membership(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Adds ETF membership from cache/universe/core_etf_holdings.csv
-    """
     df = df.copy()
     df["ticker"] = df["ticker"].astype(str).fillna("").str.upper()
 
@@ -136,34 +84,7 @@ def make_ticker_link(ticker: str) -> str:
     return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{t}</a>'
 
 
-def heat_color(val: int) -> str:
-    """
-    Dark green >= 75
-    Light green 50-74
-    Light red 26-49
-    Dark red <= 25
-    """
-    try:
-        v = int(val)
-    except Exception:
-        return ""
-    if v >= 75:
-        return "background-color: rgba(34,197,94,0.45);"
-    if v >= 50:
-        return "background-color: rgba(34,197,94,0.20);"
-    if v <= 25:
-        return "background-color: rgba(239,68,68,0.45);"
-    if v < 50:
-        return "background-color: rgba(239,68,68,0.20);"
-    return ""
-
-
 def build_sector_heatmap(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Heatmap shows % bullish setups per Sector x TF.
-    Only TFs: D/W/M/Q/Y.
-    Returns integer % matrix with no NaNs.
-    """
     use_tfs = ["D", "W", "M", "Q", "Y"]
 
     d = df.copy()
@@ -184,25 +105,30 @@ def build_sector_heatmap(df: pd.DataFrame) -> pd.DataFrame:
         piv["bear"] = 0
 
     piv["total"] = piv["bull"] + piv["bear"]
-    # bull_pct safe
     piv["bull_pct"] = piv.apply(lambda r: (r["bull"] / r["total"]) if r["total"] else 0.0, axis=1)
 
     mat = piv.pivot_table(index="sector", columns="tf", values="bull_pct", fill_value=0.0)
+    mat = mat.reindex(SECTORS_11 + (["Unknown"] if "Unknown" in mat.index else []))
+    mat = mat[[c for c in ["Y", "Q", "M", "W", "D"] if c in mat.columns]]
 
-    # enforce 11-sector order (+ Unknown at end if present)
-    idx = SECTORS_11.copy()
-    if "Unknown" in mat.index and "Unknown" not in idx:
-        idx.append("Unknown")
-    mat = mat.reindex(idx)
-
-    cols = [c for c in ["Y", "Q", "M", "W", "D"] if c in mat.columns]
-    mat = mat[cols]
-
-    # ✅ critical fix: remove NaN/inf before casting
     mat = mat.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+    return (mat * 100.0).round(0).astype(int)
 
-    mat = (mat * 100.0).round(0).astype(int)
-    return mat
+
+def heat_color(val: int) -> str:
+    try:
+        v = int(val)
+    except Exception:
+        return ""
+    if v >= 75:
+        return "background-color: rgba(34,197,94,0.45);"
+    if v >= 50:
+        return "background-color: rgba(34,197,94,0.20);"
+    if v <= 25:
+        return "background-color: rgba(239,68,68,0.45);"
+    if v < 50:
+        return "background-color: rgba(239,68,68,0.20);"
+    return ""
 
 
 # -----------------------------
@@ -213,40 +139,27 @@ if df.empty:
     st.error("No scan results found yet. The workflow hasn't written cache/results/latest.csv yet.")
     st.stop()
 
-# Ensure columns exist (so UI never breaks)
 for col in [
-    "scan_time","ticker","current_price",
-    "tf","pattern","setup","dir",
-    "entry","stop","score","aligned",
-    "last_strat","last_candle_type",
-    "actionable"
+    "scan_time","ticker","current_price","tf","pattern","setup","dir",
+    "entry","stop","score","aligned","last_strat","last_candle_type","actionable"
 ]:
     if col not in df.columns:
         df[col] = None
 
-# Normalize
 df["scan_time"] = df["scan_time"].astype(str).fillna("")
 df["ticker"] = df["ticker"].astype(str).fillna("")
 df["tf"] = df["tf"].astype(str).fillna("")
 df["dir"] = df["dir"].astype(str).fillna("")
-df["pattern"] = df["pattern"].astype(str).fillna("")
-df["setup"] = df["setup"].astype(str).fillna("")
-df["actionable"] = df["actionable"].astype(str).fillna("")
 df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
-
 for c in ["current_price","entry","stop"]:
     df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
 
 last_scan = df["scan_time"].iloc[0] if len(df) else "Unknown"
 st.markdown(f"**Last scan_time (ET):** `{last_scan}`")
 
-# Enrich metadata
 df = enrich_sector(df)
 df = enrich_etf_membership(df)
 
-# -----------------------------
-# Tabs
-# -----------------------------
 tab_scan, tab_sectors = st.tabs(["Scanner", "Industry Sectors"])
 
 with tab_scan:
@@ -265,7 +178,6 @@ with tab_scan:
     sector_options = SECTORS_11 + (["Unknown"] if "Unknown" in df["sector"].unique() else [])
     sector_selected = st.sidebar.multiselect("Sector", options=sector_options, default=sector_options)
 
-    # ETF membership filter
     all_etfs = set()
     for x in df["etfs"].fillna("").astype(str).tolist():
         for e in x.split("|"):
@@ -297,33 +209,20 @@ with tab_scan:
     if only_aligned and "aligned" in f.columns:
         f = f[f["aligned"] == True]
 
-    # Sort
     f["_abs_score"] = f["score"].abs()
-    f = f.sort_values(by=["_abs_score", "ticker", "tf"], ascending=[False, True, True]).drop(columns=["_abs_score"])
+    f = f.sort_values(by=["_abs_score","ticker","tf"], ascending=[False, True, True]).drop(columns=["_abs_score"])
 
     st.subheader("Latest Scan Results")
 
-    # Build output table with ticker clickable
     out = f.copy()
     out["Ticker"] = out["ticker"].apply(make_ticker_link)
 
-    # Select columns (robust to missing)
     cols = [
-        "Ticker",
-        "current_price",
-        "sector",
-        "etfs_pretty",
-        "tf",
-        "pattern",
-        "setup",
-        "dir",
-        "last_strat",
-        "last_candle_type",
-        "entry",
-        "stop",
-        "score",
-        "aligned",
-        "actionable",
+        "Ticker","current_price","sector","etfs_pretty",
+        "tf","pattern","setup","dir",
+        "last_strat","last_candle_type",
+        "entry","stop",
+        "score","aligned","actionable",
     ]
     cols = [c for c in cols if c in out.columns]
 
@@ -344,7 +243,6 @@ with tab_scan:
         "actionable": "Plan",
     })
 
-    # Render HTML so ticker links work
     st.markdown(out.to_html(escape=False, index=False), unsafe_allow_html=True)
 
 with tab_sectors:
@@ -359,19 +257,14 @@ Heatmap shows **% bullish setups** within each **Sector × Timeframe** (**D/W/M/
         """
     )
 
-    try:
-        hm = build_sector_heatmap(df)
-    except Exception as e:
-        st.error(f"Heatmap error: {e}")
-        hm = pd.DataFrame()
-
+    hm = build_sector_heatmap(df)
     if hm.empty:
-        st.info("Not enough data to build the heatmap yet (or no D/W/M/Q/Y rows).")
+        st.info("Not enough data to build the heatmap yet.")
     else:
-        # Add 2–3 top ETFs next to sector name
         hm2 = hm.copy()
         hm2.index = [
-            f"{s} (ETFs: {', '.join(SECTOR_TOP_ETFS.get(s, [])[:3])})" if s in SECTOR_TOP_ETFS else s
+            f"{s} (ETFs: {', '.join(SECTOR_TOP_ETFS.get(s, [])[:3])})"
+            if s in SECTOR_TOP_ETFS else s
             for s in hm2.index
         ]
         styled = hm2.style.applymap(heat_color)
