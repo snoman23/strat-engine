@@ -85,6 +85,7 @@ jobs:
           git add cache/universe/stocks_biggest.csv || true
           git add cache/universe/sector_map.csv || true
           git add cache/universe/core_etf_holdings.csv || true
+          git add cache/results/context.csv || true
 
           echo "---- GIT STATUS AFTER ADD ----"
           git status --porcelain
