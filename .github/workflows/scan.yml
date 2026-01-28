@@ -42,12 +42,27 @@ jobs:
         run: |
           python main.py
 
+          echo "---- RESULTS FILE CHECK ----"
+          ls -lah cache || true
+          ls -lah cache/results || true
+          ls -lah cache/universe || true
+
+          echo "---- latest.csv (head) ----"
+          test -f cache/results/latest.csv && head -n 5 cache/results/latest.csv || echo "latest.csv missing"
+
+          echo "---- latest.json (head) ----"
+          test -f cache/results/latest.json && head -n 20 cache/results/latest.json || echo "latest.json missing"
+
+          echo "---- sector_map.csv (head) ----"
+          test -f cache/universe/sector_map.csv && head -n 5 cache/universe/sector_map.csv || echo "sector_map.csv missing"
+
+          echo "---- core_etf_holdings.csv (head) ----"
+          test -f cache/universe/core_etf_holdings.csv && head -n 5 cache/universe/core_etf_holdings.csv || echo "core_etf_holdings.csv missing"
+
       - name: Commit updated results
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add cache/universe/sector_map.csv || true
-          git add cache/universe/core_etf_holdings.csv || true
 
           # Ensure folders exist
           mkdir -p cache/results cache/meta cache/universe
@@ -56,25 +71,33 @@ jobs:
           test -f cache/meta/last_run.json || echo '{}' > cache/meta/last_run.json
           test -f cache/universe/state.json || echo '{}' > cache/universe/state.json
 
-          # Add outputs for Streamlit
+          echo "---- GIT STATUS BEFORE ADD ----"
+          git status --porcelain
+
+          # Add outputs for Streamlit (scanner results)
           git add cache/results/latest.csv cache/results/latest.json || true
 
-          # Scheduler state (prevents re-running same closed candle)
+          # Scheduler + universe state
           git add cache/meta/last_run.json || true
-
-          # Universe rotation state (prevents scanning same slice forever)
           git add cache/universe/state.json || true
 
-          # ✅ NEW: Universe caches (needed for Sector + ETF membership in Streamlit)
+          # Universe caches + mappings (for Sector + ETF membership)
           git add cache/universe/stocks_biggest.csv || true
+          git add cache/universe/sector_map.csv || true
           git add cache/universe/core_etf_holdings.csv || true
+
+          echo "---- GIT STATUS AFTER ADD ----"
+          git status --porcelain
+
+          echo "---- CACHED DIFF SUMMARY ----"
+          git diff --cached --stat || true
 
           # If nothing changed, exit cleanly
           git diff --cached --quiet && echo "No changes to commit" && exit 0
 
           git commit -m "Update scan results"
 
-          # Pull latest again in case another run pushed while we were scanning
+          # Sync again in case another run pushed while we were scanning
           git fetch origin main
           git rebase origin/main || (git rebase --abort && git reset --hard origin/main)
 
