@@ -35,6 +35,21 @@ DERIVED = {
 
 WEIGHTS = {"Y": 5, "Q": 4, "M": 3, "W": 2, "D": 1}
 
+SECTOR_MAP_PATH = os.path.join("cache", "universe", "sector_map.csv")
+ETF_HOLDINGS_PATH = os.path.join("cache", "universe", "core_etf_holdings.csv")
+
+
+def _normalize_symbol(sym: str) -> str:
+    s = str(sym).strip().upper()
+    if s.startswith("$"):
+        s = s[1:]
+    s = s.replace(".", "-")
+    out = []
+    for ch in s:
+        if ("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch == "-":
+            out.append(ch)
+    return "".join(out)
+
 
 def _infer_resolution_seconds(df: pd.DataFrame) -> int:
     if df is None or df.empty or "timestamp" not in df.columns or len(df) < 3:
@@ -126,10 +141,6 @@ def compute_bias_score(context: dict) -> int:
 
 
 def candlestick_name(o: float, h: float, l: float, c: float) -> str:
-    """
-    Heuristic candlestick naming based only on shape (no trend context).
-    We label “hammer-like” vs “hanging-man-like” based on candle color.
-    """
     try:
         o = float(o); h = float(h); l = float(l); c = float(c)
     except Exception:
@@ -143,33 +154,85 @@ def candlestick_name(o: float, h: float, l: float, c: float) -> str:
     bull = c > o
     bear = c < o
 
-    # Doji (very small body)
     if body <= 0.10 * rng:
-        # Dragonfly / Gravestone variants
         if lower >= 0.60 * rng and upper <= 0.15 * rng:
             return "Dragonfly Doji (bullish-leaning)"
         if upper >= 0.60 * rng and lower <= 0.15 * rng:
             return "Gravestone Doji (bearish-leaning)"
         return "Doji"
 
-    # Hammer-like / Hanging-man-like (long lower wick)
     if lower >= 2.0 * body and upper <= 0.35 * body:
         return "Bullish Hammer-like" if bull else "Bearish Hanging-Man-like"
 
-    # Inverted hammer-like / Shooting star-like (long upper wick)
     if upper >= 2.0 * body and lower <= 0.35 * body:
         return "Bullish Inverted Hammer-like" if bull else "Bearish Shooting-Star-like"
 
-    # Marubozu-like (very small wicks)
     if upper <= 0.10 * rng and lower <= 0.10 * rng:
         return "Bullish Marubozu-like" if bull else "Bearish Marubozu-like"
 
-    # Generic
     if bull:
         return "Bullish Candle"
     if bear:
         return "Bearish Candle"
     return "Neutral Candle"
+
+
+def _load_sector_map() -> pd.DataFrame:
+    if not os.path.exists(SECTOR_MAP_PATH):
+        return pd.DataFrame(columns=["ticker", "sector"])
+    df = pd.read_csv(SECTOR_MAP_PATH)
+    if "ticker" not in df.columns or "sector" not in df.columns:
+        return pd.DataFrame(columns=["ticker", "sector"])
+    df = df.copy()
+    df["ticker"] = df["ticker"].astype(str).map(_normalize_symbol)
+    df["sector"] = df["sector"].astype(str).fillna("Unknown")
+    return df[["ticker", "sector"]]
+
+
+def _load_etf_membership() -> pd.DataFrame:
+    if not os.path.exists(ETF_HOLDINGS_PATH):
+        return pd.DataFrame(columns=["ticker", "etfs", "etf_count"])
+    df = pd.read_csv(ETF_HOLDINGS_PATH)
+    if "ticker" not in df.columns:
+        return pd.DataFrame(columns=["ticker", "etfs", "etf_count"])
+    df = df.copy()
+    df["ticker"] = df["ticker"].astype(str).map(_normalize_symbol)
+    df["etfs"] = df.get("etfs", "").astype(str).fillna("")
+    if "etf_count" not in df.columns:
+        df["etf_count"] = df["etfs"].apply(lambda x: len([e for e in str(x).split("|") if e]))
+    return df[["ticker", "etfs", "etf_count"]]
+
+
+def enrich_rows_with_metadata(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return rows
+
+    df = pd.DataFrame(rows)
+    if "ticker" not in df.columns:
+        return rows
+
+    df["ticker"] = df["ticker"].astype(str).map(_normalize_symbol)
+
+    sector_df = _load_sector_map()
+    etf_df = _load_etf_membership()
+
+    if not sector_df.empty:
+        df = df.merge(sector_df, on="ticker", how="left")
+    else:
+        df["sector"] = "Unknown"
+
+    if not etf_df.empty:
+        df = df.merge(etf_df, on="ticker", how="left")
+    else:
+        df["etfs"] = ""
+        df["etf_count"] = 0
+
+    df["sector"] = df["sector"].fillna("Unknown")
+    df["etfs"] = df["etfs"].fillna("")
+    df["etf_count"] = pd.to_numeric(df["etf_count"], errors="coerce").fillna(0).astype(int)
+    df["etfs_pretty"] = df["etfs"].apply(lambda x: ", ".join([e for e in str(x).split("|") if e]))
+
+    return df.to_dict(orient="records")
 
 
 def scan_ticker(ticker: str, scan_time: str):
@@ -189,7 +252,6 @@ def scan_ticker(ticker: str, scan_time: str):
         df2 = df2.sort_values("timestamp").reset_index(drop=True)
         classified[tf] = df2
 
-    # HTF context from last CLOSED candles
     context = {}
     for tf in ("Y", "Q", "M", "W", "D"):
         df_tf = classified.get(tf)
@@ -278,6 +340,9 @@ def main():
             all_rows.extend(rows)
         except Exception as e:
             print(f"Error scanning {ticker}: {e}")
+
+    # ✅ Add sector + ETF membership into output rows
+    all_rows = enrich_rows_with_metadata(all_rows)
 
     write_snapshot(all_rows)
     print(f"\nSnapshot written: {len(all_rows)} rows\n")
