@@ -9,7 +9,14 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from config import DEV_MODE, DEV_TICKERS_LIMIT, MIN_MARKET_CAP, DEV_YF_BASE_FEEDS, YF_BASE_FEEDS
+from config import (
+    DEV_MODE,
+    DEV_TICKERS_LIMIT,
+    MIN_MARKET_CAP,
+    DEV_YF_BASE_FEEDS,
+    YF_BASE_FEEDS,
+    SECTOR_TOP_ETFS,
+)
 from snapshot import write_snapshot
 
 from universe.loader import load_universe
@@ -17,7 +24,6 @@ from loaders.yahoo import load_ohlc
 from timeframes.resample import resample_timeframe
 from strat.classify import classify_strat_candles
 from strat_signals import analyze_last_closed_setups, last_closed_index
-
 
 TARGET_TFS = ["Y", "Q", "M", "W", "D", "4H", "3H", "2H", "1H"]
 
@@ -37,10 +43,13 @@ WEIGHTS = {"Y": 5, "Q": 4, "M": 3, "W": 2, "D": 1}
 
 SECTOR_MAP_PATH = os.path.join("cache", "universe", "sector_map.csv")
 ETF_HOLDINGS_PATH = os.path.join("cache", "universe", "core_etf_holdings.csv")
+STOCKS_BIGGEST_PATH = os.path.join("cache", "universe", "stocks_biggest.csv")
+
+CONTEXT_OUT_PATH = os.path.join("cache", "results", "context.csv")
 
 
-def _normalize_symbol(sym: str) -> str:
-    s = str(sym).strip().upper()
+def _norm_ticker(x: str) -> str:
+    s = str(x).strip().upper()
     if s.startswith("$"):
         s = s[1:]
     s = s.replace(".", "-")
@@ -129,9 +138,12 @@ def get_current_price(feeds: dict) -> float | None:
     return None
 
 
-def compute_bias_score(context: dict) -> int:
+def compute_bias_score(context_closed: dict) -> int:
+    """
+    Confirmed bias only: uses CLOSED bars (Y/Q/M/W/D).
+    """
     score = 0
-    for tf, strat in context.items():
+    for tf, strat in context_closed.items():
         w = WEIGHTS.get(tf, 0)
         if strat == "2U":
             score += w
@@ -184,62 +196,106 @@ def _load_sector_map() -> pd.DataFrame:
     if "ticker" not in df.columns or "sector" not in df.columns:
         return pd.DataFrame(columns=["ticker", "sector"])
     df = df.copy()
-    df["ticker"] = df["ticker"].astype(str).map(_normalize_symbol)
+    df["ticker"] = df["ticker"].astype(str).map(_norm_ticker)
     df["sector"] = df["sector"].astype(str).fillna("Unknown")
     return df[["ticker", "sector"]]
 
 
 def _load_etf_membership() -> pd.DataFrame:
     if not os.path.exists(ETF_HOLDINGS_PATH):
-        return pd.DataFrame(columns=["ticker", "etfs", "etf_count"])
+        return pd.DataFrame(columns=["ticker", "etfs", "etf_count", "etfs_pretty"])
     df = pd.read_csv(ETF_HOLDINGS_PATH)
     if "ticker" not in df.columns:
-        return pd.DataFrame(columns=["ticker", "etfs", "etf_count"])
+        return pd.DataFrame(columns=["ticker", "etfs", "etf_count", "etfs_pretty"])
     df = df.copy()
-    df["ticker"] = df["ticker"].astype(str).map(_normalize_symbol)
+    df["ticker"] = df["ticker"].astype(str).map(_norm_ticker)
     df["etfs"] = df.get("etfs", "").astype(str).fillna("")
     if "etf_count" not in df.columns:
         df["etf_count"] = df["etfs"].apply(lambda x: len([e for e in str(x).split("|") if e]))
-    return df[["ticker", "etfs", "etf_count"]]
+    df["etf_count"] = pd.to_numeric(df["etf_count"], errors="coerce").fillna(0).astype(int)
+    df["etfs_pretty"] = df["etfs"].apply(lambda x: ", ".join([e for e in str(x).split("|") if e]))
+    return df[["ticker", "etfs", "etf_count", "etfs_pretty"]]
 
 
-def enrich_rows_with_metadata(rows: list[dict]) -> list[dict]:
-    if not rows:
-        return rows
+def _load_industry_map() -> pd.DataFrame:
+    if not os.path.exists(STOCKS_BIGGEST_PATH):
+        return pd.DataFrame(columns=["ticker", "industry"])
+    df = pd.read_csv(STOCKS_BIGGEST_PATH)
+    cols = {c.lower().strip(): c for c in df.columns}
+    sym_col = cols.get("symbol")
+    ind_col = cols.get("industry")
+    if sym_col is None or ind_col is None:
+        return pd.DataFrame(columns=["ticker", "industry"])
+    out = df[[sym_col, ind_col]].copy()
+    out.columns = ["ticker", "industry"]
+    out["ticker"] = out["ticker"].astype(str).map(_norm_ticker)
+    out["industry"] = out["industry"].astype(str).fillna("Unknown")
+    return out
 
-    df = pd.DataFrame(rows)
-    if "ticker" not in df.columns:
-        return rows
 
-    df["ticker"] = df["ticker"].astype(str).map(_normalize_symbol)
+def _sector_etf_lookup() -> dict[str, str]:
+    rev = {}
+    for sec, etfs in SECTOR_TOP_ETFS.items():
+        for e in etfs:
+            rev[_norm_ticker(e)] = sec
+    return rev
+
+
+def enrich_df_with_metadata(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "ticker" not in df.columns:
+        return df
+
+    df = df.copy()
+    df["ticker"] = df["ticker"].astype(str).map(_norm_ticker)
 
     sector_df = _load_sector_map()
     etf_df = _load_etf_membership()
+    ind_df = _load_industry_map()
+    sec_etf = _sector_etf_lookup()
 
     if not sector_df.empty:
         df = df.merge(sector_df, on="ticker", how="left")
     else:
         df["sector"] = "Unknown"
+    df["sector"] = df["sector"].fillna("Unknown")
+
+    if not ind_df.empty:
+        df = df.merge(ind_df, on="ticker", how="left")
+    else:
+        df["industry"] = "Unknown"
+    df["industry"] = df["industry"].fillna("Unknown")
+
+    # If ticker is one of the sector ETFs (XLB, XLK, etc), enforce sector + industry tag
+    df["sector"] = df.apply(lambda r: sec_etf.get(r["ticker"], r["sector"]), axis=1)
+    df["industry"] = df.apply(lambda r: ("Sector ETF" if r["ticker"] in sec_etf else r["industry"]), axis=1)
 
     if not etf_df.empty:
         df = df.merge(etf_df, on="ticker", how="left")
     else:
         df["etfs"] = ""
         df["etf_count"] = 0
+        df["etfs_pretty"] = ""
 
-    df["sector"] = df["sector"].fillna("Unknown")
-    df["etfs"] = df["etfs"].fillna("")
+    for c in ["etfs", "etfs_pretty"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("")
+    if "etf_count" not in df.columns:
+        df["etf_count"] = 0
     df["etf_count"] = pd.to_numeric(df["etf_count"], errors="coerce").fillna(0).astype(int)
-    df["etfs_pretty"] = df["etfs"].apply(lambda x: ", ".join([e for e in str(x).split("|") if e]))
 
-    return df.to_dict(orient="records")
+    return df
+
+
+def _write_context_csv(context_rows: list[dict]) -> None:
+    os.makedirs(os.path.dirname(CONTEXT_OUT_PATH), exist_ok=True)
+    pd.DataFrame(context_rows).to_csv(CONTEXT_OUT_PATH, index=False)
 
 
 def scan_ticker(ticker: str, scan_time: str):
     frames, feeds = build_timeframe_frames(ticker)
-
     if "D" not in frames or frames["D"].empty or len(frames["D"]) < 50:
-        return []
+        return [], None
 
     current_price = get_current_price(feeds)
     px = round(float(current_price), 2) if current_price is not None else None
@@ -252,15 +308,47 @@ def scan_ticker(ticker: str, scan_time: str):
         df2 = df2.sort_values("timestamp").reset_index(drop=True)
         classified[tf] = df2
 
-    context = {}
+    # Confirmed (CLOSED) context for setups/bias score
+    ctx_closed = {}
     for tf in ("Y", "Q", "M", "W", "D"):
         df_tf = classified.get(tf)
         if df_tf is None or df_tf.empty or len(df_tf) < 3:
             continue
         idx = last_closed_index(tf, df_tf)
-        context[tf] = str(df_tf.iloc[idx]["strat"])
+        ctx_closed[tf] = str(df_tf.iloc[idx]["strat"])
 
-    bias_score = compute_bias_score(context)
+    # Live (CURRENT BAR) context for heatmap
+    ctx_live = {}
+    for tf in ("Y", "Q", "M", "W", "D"):
+        df_tf = classified.get(tf)
+        if df_tf is None or df_tf.empty or len(df_tf) < 2:
+            continue
+        # current bar strat (can repaint)
+        v = df_tf.iloc[-1]["strat"]
+        ctx_live[tf] = str(v) if pd.notna(v) else None
+
+    bias_score = compute_bias_score(ctx_closed)
+
+    # Context row (for heatmap)
+    context_row = {
+        "scan_time": scan_time,
+        "ticker": ticker,
+        "current_price": px,
+
+        "ctx_Y_closed": ctx_closed.get("Y"),
+        "ctx_Q_closed": ctx_closed.get("Q"),
+        "ctx_M_closed": ctx_closed.get("M"),
+        "ctx_W_closed": ctx_closed.get("W"),
+        "ctx_D_closed": ctx_closed.get("D"),
+
+        "ctx_Y_live": ctx_live.get("Y"),
+        "ctx_Q_live": ctx_live.get("Q"),
+        "ctx_M_live": ctx_live.get("M"),
+        "ctx_W_live": ctx_live.get("W"),
+        "ctx_D_live": ctx_live.get("D"),
+
+        "score": int(bias_score),
+    }
 
     rows = []
     for tf in TARGET_TFS:
@@ -273,6 +361,7 @@ def scan_ticker(ticker: str, scan_time: str):
             continue
 
         for sig in signals:
+            # Setups must remain LAST CLOSED (no repaint)
             if getattr(sig, "kind", "") == "TRIGGERED":
                 continue
 
@@ -308,15 +397,15 @@ def scan_ticker(ticker: str, scan_time: str):
                     "actionable": sig.actionable,
                     "note": sig.note,
 
-                    "ctx_Y": context.get("Y"),
-                    "ctx_Q": context.get("Q"),
-                    "ctx_M": context.get("M"),
-                    "ctx_W": context.get("W"),
-                    "ctx_D": context.get("D"),
+                    "ctx_Y": ctx_closed.get("Y"),
+                    "ctx_Q": ctx_closed.get("Q"),
+                    "ctx_M": ctx_closed.get("M"),
+                    "ctx_W": ctx_closed.get("W"),
+                    "ctx_D": ctx_closed.get("D"),
                 }
             )
 
-    return rows
+    return rows, context_row
 
 
 def main():
@@ -334,18 +423,29 @@ def main():
     print(f"Scanning {len(tickers)} tickers...\n")
 
     all_rows = []
+    context_rows = []
+
     for ticker in tickers:
         try:
-            rows = scan_ticker(ticker, scan_time)
+            rows, ctx = scan_ticker(ticker, scan_time)
             all_rows.extend(rows)
+            if ctx:
+                context_rows.append(ctx)
         except Exception as e:
             print(f"Error scanning {ticker}: {e}")
 
-    # ✅ Add sector + ETF membership into output rows
-    all_rows = enrich_rows_with_metadata(all_rows)
+    # Enrich with sector/industry/etf membership for UI filtering + heatmaps
+    df_rows = enrich_df_with_metadata(pd.DataFrame(all_rows)) if all_rows else pd.DataFrame()
+    df_ctx = enrich_df_with_metadata(pd.DataFrame(context_rows)) if context_rows else pd.DataFrame()
 
-    write_snapshot(all_rows)
-    print(f"\nSnapshot written: {len(all_rows)} rows\n")
+    all_rows_out = df_rows.to_dict(orient="records") if not df_rows.empty else []
+    ctx_out = df_ctx.to_dict(orient="records") if not df_ctx.empty else []
+
+    write_snapshot(all_rows_out)
+    _write_context_csv(ctx_out)
+
+    print(f"\nSnapshot written: {len(all_rows_out)} rows")
+    print(f"Context written: {len(ctx_out)} tickers -> {CONTEXT_OUT_PATH}\n")
 
 
 if __name__ == "__main__":
