@@ -37,41 +37,98 @@ def load_sector_map() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _norm_ticker(x: str) -> str:
+    s = str(x).strip().upper()
+    if s.startswith("$"):
+        s = s[1:]
+    s = s.replace(".", "-")
+    out = []
+    for ch in s:
+        if ("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch == "-":
+            out.append(ch)
+    return "".join(out)
+
+
 def enrich_sector(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["ticker"] = df["ticker"].astype(str).fillna("").str.upper()
+    df["ticker"] = df["ticker"].astype(str).fillna("").map(_norm_ticker)
     df["sector"] = "Unknown"
 
     sm = load_sector_map()
-    if sm.empty or "ticker" not in sm.columns or "sector" not in sm.columns:
+    if sm.empty:
         return df
 
-    sm = sm.copy()
-    sm["ticker"] = sm["ticker"].astype(str).fillna("").str.upper()
-    sm["sector"] = sm["sector"].astype(str).fillna("Unknown")
+    # accept variations in case/spacing
+    cols = [c.lower().strip() for c in sm.columns]
+    colmap = {c.lower().strip(): c for c in sm.columns}
 
-    out = df.merge(sm[["ticker", "sector"]], on="ticker", how="left", suffixes=("", "_m"))
-    out["sector"] = out["sector_m"].fillna(out["sector"]).fillna("Unknown")
-    out = out.drop(columns=["sector_m"], errors="ignore")
+    if "ticker" not in cols or "sector" not in cols:
+        return df
+
+    sm2 = sm[[colmap["ticker"], colmap["sector"]]].copy()
+    sm2.columns = ["ticker", "sector"]
+    sm2["ticker"] = sm2["ticker"].astype(str).fillna("").map(_norm_ticker)
+    sm2["sector"] = sm2["sector"].astype(str).fillna("Unknown")
+
+    out = df.merge(sm2, on="ticker", how="left", suffixes=("", "_m"))
+    if "sector_m" in out.columns:
+        out["sector"] = out["sector_m"].fillna(out["sector"]).fillna("Unknown")
+        out = out.drop(columns=["sector_m"], errors="ignore")
+    else:
+        out["sector"] = out["sector"].fillna("Unknown")
+
     return out
 
 
 def enrich_etf_membership(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    SAFE enrichment:
+    - Never crashes if holdings file missing/empty/wrong columns
+    - Always returns df with etfs + etfs_pretty columns
+    """
     df = df.copy()
-    df["ticker"] = df["ticker"].astype(str).fillna("").str.upper()
+    df["ticker"] = df["ticker"].astype(str).fillna("").map(_norm_ticker)
+
+    # guarantee columns exist
+    df["etfs"] = ""
+    df["etfs_pretty"] = ""
 
     h = load_holdings()
-    if h.empty or "ticker" not in h.columns:
-        df["etfs"] = ""
-        df["etfs_pretty"] = ""
+    if h.empty:
         return df
 
-    h = h.copy()
-    h["ticker"] = h["ticker"].astype(str).fillna("").str.upper()
-    h["etfs"] = h.get("etfs", "").astype(str).fillna("")
+    cols = [c.lower().strip() for c in h.columns]
+    colmap = {c.lower().strip(): c for c in h.columns}
 
-    out = df.merge(h[["ticker", "etfs"]], on="ticker", how="left")
-    out["etfs"] = out["etfs"].fillna("")
+    if "ticker" not in cols:
+        return df
+
+    # try to find the membership column
+    etf_col = None
+    for cand in ["etfs", "etf", "memberships", "membership", "holdings"]:
+        if cand in cols:
+            etf_col = colmap[cand]
+            break
+
+    if etf_col is None:
+        return df
+
+    h2 = h[[colmap["ticker"], etf_col]].copy()
+    h2.columns = ["ticker", "etfs"]
+    h2["ticker"] = h2["ticker"].astype(str).fillna("").map(_norm_ticker)
+    h2["etfs"] = h2["etfs"].astype(str).fillna("")
+
+    out = df.merge(h2, on="ticker", how="left", suffixes=("", "_m"))
+
+    # if merge created etfs_m, prefer that
+    if "etfs_m" in out.columns:
+        out["etfs"] = out["etfs_m"].fillna(out.get("etfs", "")).fillna("")
+        out = out.drop(columns=["etfs_m"], errors="ignore")
+    else:
+        if "etfs" not in out.columns:
+            out["etfs"] = ""
+        out["etfs"] = out["etfs"].fillna("")
+
     out["etfs_pretty"] = out["etfs"].apply(lambda x: ", ".join([e for e in str(x).split("|") if e]))
     return out
 
@@ -160,7 +217,6 @@ for c in ["current_price","entry","stop"]:
 last_scan = df["scan_time"].iloc[0] if len(df) else "Unknown"
 st.markdown(f"**Last scan_time (ET):** `{last_scan}`")
 
-# Enrich (fast)
 df = enrich_sector(df)
 df = enrich_etf_membership(df)
 
@@ -215,21 +271,16 @@ if etf_selected:
 if only_aligned and "aligned" in f.columns:
     f = f[f["aligned"] == True]
 
-# Sort (stable)
 f["_abs_score"] = f["score"].abs()
 f = f.sort_values(by=["_abs_score","ticker","tf"], ascending=[False, True, True]).drop(columns=["_abs_score"])
 
-# Tabs
 tab_scan, tab_sectors = st.tabs(["Scanner", "Industry Sectors"])
 
 with tab_scan:
     st.subheader("Latest Scan Results")
-
-    # Download full filtered data (so we can render small but still give full access)
     csv_bytes = f.to_csv(index=False).encode("utf-8")
     st.download_button("Download filtered results (CSV)", data=csv_bytes, file_name="filtered_results.csv", mime="text/csv")
 
-    # Render only first N rows as HTML (keeps app responsive)
     out = f.head(max_rows_render).copy()
     out["Ticker"] = out["ticker"].apply(make_ticker_link)
 
